@@ -212,7 +212,8 @@ function getSessionAccessState() {
 window.getSessionAccessState = getSessionAccessState;
 
 // ============================================================================
-// STABILIZATION STEP 6A.2: CANONICAL USER PROFILE & PROVIDER LINKING ENGINE
+// ============================================================================
+// STABILIZATION STEP 6A.3: CANONICAL USER PROFILE & NON-BLOCKING PROFILE SYNC
 // ============================================================================
 window.normalizeEmail = function (email) {
   return (email || '').toString().trim().toLowerCase();
@@ -228,13 +229,13 @@ window.resolveCanonicalUserProfile = async function (firebaseUser, authProvider 
     const userSnap = await getDoc(userDocRef);
 
     if (!userSnap.exists()) {
-      const isLegacyRajitha = (emailNorm === 'amarasinghesl@gmail.com');
-      const isNewCanonicalUser = !isLegacyRajitha;
+      const cachedUser = (window.state?.user?.uid === uid) ? window.state.user : JSON.parse(localStorage.getItem('yathralanka_current_user') || 'null');
+      const matchingCache = (cachedUser && cachedUser.uid === uid) ? cachedUser : null;
+      const preservedXP = (matchingCache && Number.isFinite(Number(matchingCache.xp))) ? Number(matchingCache.xp) : 50;
+      const isNewCanonicalUser = !(matchingCache && Number.isFinite(Number(matchingCache.xp)) && matchingCache.xp > 0);
 
-      const initialXP = isLegacyRajitha ? 320 : 50;
-      const initialRank = isLegacyRajitha ? 'Senior Explorer' : 'Novice Explorer';
       const welcomeXPAwarded = true;
-      const welcomeBannerSeen = isLegacyRajitha;
+      const welcomeBannerSeen = !isNewCanonicalUser;
 
       const newProfile = {
         uid: uid,
@@ -246,8 +247,8 @@ window.resolveCanonicalUserProfile = async function (firebaseUser, authProvider 
         passwordProfilePhotoURL: '',
         activeAuthProvider: authProvider,
         linkedProviders: [authProvider],
-        xp: initialXP,
-        rank: initialRank,
+        xp: preservedXP,
+        rank: 'Novice Explorer',
         welcomeXPAwarded: welcomeXPAwarded,
         welcomeXPAwardedAt: serverTimestamp(),
         welcomeBannerSeen: welcomeBannerSeen,
@@ -256,18 +257,18 @@ window.resolveCanonicalUserProfile = async function (firebaseUser, authProvider 
       };
 
       await setDoc(userDocRef, newProfile);
-      console.log(`[PROFILE-MERGE] created=true preservedXP=${isLegacyRajitha}`);
-      console.log(`[WELCOME-XP] eligible=${isNewCanonicalUser} awarded=${isNewCanonicalUser} reason=${isNewCanonicalUser ? 'new_canonical_user' : 'legacy_rajitha_preservation'}`);
+      console.log(`[PROFILE-MERGE] created=true preservedXP=${!isNewCanonicalUser}`);
+      console.log(`[WELCOME-XP] eligible=${isNewCanonicalUser} awarded=${isNewCanonicalUser} reason=${isNewCanonicalUser ? 'new_canonical_user' : 'existing_session_preservation'}`);
 
       return {
         ...newProfile,
-        xp: initialXP,
+        xp: preservedXP,
         welcomeXPAwarded: true,
         welcomeBannerSeen: welcomeBannerSeen
       };
     } else {
       const existingData = userSnap.data();
-      const preservedXP = Number.isFinite(Number(existingData.xp)) ? Number(existingData.xp) : (emailNorm === 'amarasinghesl@gmail.com' ? 320 : 0);
+      const preservedXP = Number.isFinite(Number(existingData.xp)) ? Number(existingData.xp) : 0;
 
       const welcomeXPAwarded = existingData.welcomeXPAwarded ?? true;
       const welcomeBannerSeen = existingData.welcomeBannerSeen ?? true;
@@ -306,8 +307,35 @@ window.resolveCanonicalUserProfile = async function (firebaseUser, authProvider 
       };
     }
   } catch (err) {
-    console.error("[PROFILE-MERGE] Error resolving profile:", err);
+    console.error(`[PROFILE-SYNC] stage=error code=${err?.code || 'firestore_error'} message=${err?.message || err}`);
     return null;
+  }
+};
+
+window.syncCanonicalProfileAsync = async function (firebaseUser, authProvider, options = {}) {
+  if (!firebaseUser || !firebaseUser.uid) return;
+  console.log(`[PROFILE-SYNC] stage=start attempt=${window.state?.authAttempt?.id}`);
+  try {
+    const profile = await window.resolveCanonicalUserProfile(firebaseUser, authProvider, options);
+    if (profile && window.state?.user?.uid === firebaseUser.uid) {
+      window.state.user.xp = Number.isFinite(Number(profile.xp)) ? Number(profile.xp) : window.state.user.xp;
+      window.state.user.preferredDisplayName = profile.preferredDisplayName || window.state.user.preferredDisplayName;
+      window.state.user.googlePhotoURL = profile.googlePhotoURL || window.state.user.googlePhotoURL;
+      window.state.user.welcomeXPAwarded = profile.welcomeXPAwarded ?? true;
+      window.state.user.welcomeBannerSeen = profile.welcomeBannerSeen ?? true;
+      localStorage.setItem('yathralanka_current_user', JSON.stringify(window.state.user));
+      console.log(`[PROFILE-SYNC] stage=success attempt=${window.state?.authAttempt?.id}`);
+    } else if (!profile) {
+      console.warn(`[PROFILE-SYNC] stage=error message=profile_null_non_blocking`);
+      if (typeof window.showNotification === 'function') {
+        window.showNotification("Signed in successfully. Some profile information could not be synchronized yet.", "info");
+      }
+    }
+  } catch (err) {
+    console.error(`[PROFILE-SYNC] stage=error code=${err?.code || 'sync_failed'} message=${err?.message || err}`);
+    if (typeof window.showNotification === 'function') {
+      window.showNotification("Signed in successfully. Some profile information could not be synchronized yet.", "info");
+    }
   }
 };
 
@@ -348,13 +376,13 @@ window.showReauthPasswordModal = function () {
       }
       return;
     }
-    const cred = window.state.pendingGoogleCredential;
-    if (!cred) {
+    const pendingObj = window.state.pendingGoogleCredential;
+    if (!pendingObj || !pendingObj.credential) {
       cleanupModal();
       return;
     }
     try {
-      const email = cred.email || auth?.currentUser?.email;
+      const email = pendingObj.email || auth?.currentUser?.email;
       if (!email) {
         cleanupModal();
         return;
@@ -362,7 +390,7 @@ window.showReauthPasswordModal = function () {
       const userCred = await signInWithEmailAndPassword(auth, email, passVal);
       if (userCred?.user) {
         console.log(`[PROVIDER-LINK] existing=password pending=google.com status=start`);
-        const linkResult = await linkWithCredential(userCred.user, cred);
+        const linkResult = await linkWithCredential(userCred.user, pendingObj.credential);
         console.log(`[PROVIDER-LINK] existing=password pending=google.com status=success`);
         window.state.pendingGoogleCredential = null;
         cleanupModal();
@@ -383,54 +411,45 @@ window.handlePostAuthUserSuccess = async function ({ firebaseUser, authProvider,
     return false;
   }
 
-  console.log(`[IDENTITY] provider=${authProvider} canonicalUidPresent=${Boolean(firebaseUser.uid)}`);
+  const uid = firebaseUser.uid;
+  const emailNorm = window.normalizeEmail(firebaseUser.email);
+  console.log(`[IDENTITY] provider=${authProvider} canonicalUidPresent=true attempt=${attemptId || window.state?.authAttempt?.id || 'none'}`);
 
-  const userProfile = await window.resolveCanonicalUserProfile(firebaseUser, authProvider, options);
+  // 1. Construct Immediate Safe In-Memory Session
+  const cachedUser = (window.state?.user?.uid === uid) ? window.state.user : JSON.parse(localStorage.getItem('yathralanka_current_user') || 'null');
+  const matchingCache = (cachedUser && cachedUser.uid === uid) ? cachedUser : null;
 
-  if (!userProfile) {
-    if (cleanup) cleanup();
-    if (typeof window.showNotification === 'function') {
-      window.showNotification("Unable to load profile. Please check network connection.", "error");
-    }
-    return false;
-  }
-
-  const preferredName = userProfile.preferredDisplayName || userProfile.googleDisplayName || 'Explorer';
-  let photoSource = 'default';
+  const preferredName = options.preferredDisplayName || matchingCache?.preferredDisplayName || firebaseUser.displayName || (emailNorm ? emailNorm.split('@')[0] : 'Explorer');
   let displayPhoto = '/assets/royal-avatar.png';
+  let photoSource = 'default';
 
   if (authProvider === 'google.com') {
-    if (userProfile.googlePhotoURL) {
-      displayPhoto = userProfile.googlePhotoURL;
-      photoSource = 'google';
-    }
-  } else if (authProvider === 'password') {
-    if (userProfile.passwordProfilePhotoURL) {
-      displayPhoto = userProfile.passwordProfilePhotoURL;
-      photoSource = 'password-upload';
-    } else if (userProfile.googlePhotoURL) {
-      displayPhoto = userProfile.googlePhotoURL;
-      photoSource = 'google';
-    }
+    displayPhoto = firebaseUser.photoURL || matchingCache?.googlePhotoURL || '/assets/royal-avatar.png';
+    photoSource = firebaseUser.photoURL ? 'google' : 'default';
+  } else {
+    displayPhoto = matchingCache?.passwordProfilePhotoURL || matchingCache?.googlePhotoURL || firebaseUser.photoURL || '/assets/royal-avatar.png';
+    photoSource = matchingCache?.passwordProfilePhotoURL ? 'password-upload' : (firebaseUser.photoURL ? 'google' : 'default');
   }
   console.log(`[PROFILE-PHOTO] source=${photoSource}`);
 
+  const initialXP = matchingCache && Number.isFinite(Number(matchingCache.xp)) ? Number(matchingCache.xp) : 0;
+
   const userSession = {
-    uid: userProfile.uid,
+    uid,
     name: preferredName,
     displayName: preferredName,
     preferredDisplayName: preferredName,
-    email: userProfile.email,
-    emailNormalized: userProfile.emailNormalized,
+    email: firebaseUser.email || '',
+    emailNormalized: emailNorm,
     photoURL: displayPhoto,
-    googlePhotoURL: userProfile.googlePhotoURL || '',
-    passwordProfilePhotoURL: userProfile.passwordProfilePhotoURL || '',
+    googlePhotoURL: authProvider === 'google.com' ? (firebaseUser.photoURL || '') : (matchingCache?.googlePhotoURL || ''),
+    passwordProfilePhotoURL: matchingCache?.passwordProfilePhotoURL || '',
     activeAuthProvider: authProvider,
-    linkedProviders: userProfile.linkedProviders || [authProvider],
-    xp: Number.isFinite(Number(userProfile.xp)) ? Number(userProfile.xp) : 0,
-    rank: userProfile.rank || 'Novice Explorer',
-    welcomeXPAwarded: userProfile.welcomeXPAwarded ?? true,
-    welcomeBannerSeen: userProfile.welcomeBannerSeen ?? true,
+    linkedProviders: matchingCache?.linkedProviders || [authProvider],
+    xp: initialXP,
+    rank: matchingCache?.rank || 'Novice Explorer',
+    welcomeXPAwarded: matchingCache?.welcomeXPAwarded ?? true,
+    welcomeBannerSeen: matchingCache?.welcomeBannerSeen ?? true,
     isGuest: false
   };
 
@@ -445,16 +464,22 @@ window.handlePostAuthUserSuccess = async function ({ firebaseUser, authProvider,
 
   if (cleanup) cleanup();
 
+  // 2. Authorize Immediate Navigation to Dashboard
   const targetAttemptId = attemptId || window.state?.authAttempt?.id;
   if (targetAttemptId && window.state?.authAttempt) {
     window.state.authAttempt.status = 'exchanging-credential';
   }
 
-  return window.completeVerifiedAuthentication({
+  const navApproved = window.completeVerifiedAuthentication({
     attemptId: targetAttemptId,
     firebaseUser,
     userSession
   });
+
+  // 3. Independent Non-Blocking Firestore Profile Sync
+  window.syncCanonicalProfileAsync(firebaseUser, authProvider, options);
+
+  return navApproved;
 };
 
 // ============================================================================
@@ -464,20 +489,20 @@ function completeVerifiedAuthentication({ attemptId, firebaseUser, userSession }
   if (!window.state) window.state = {};
   const attempt = window.state.authAttempt;
 
-  const v1 = Boolean(attempt && attempt.id === attemptId);
-  const v2 = Boolean(attempt && attempt.status === 'exchanging-credential');
   const v3 = Boolean(firebaseUser);
   const v4 = Boolean(firebaseUser && firebaseUser.uid);
   const v5 = Boolean(typeof auth !== 'undefined' && auth && auth.currentUser);
   const v6 = Boolean(auth && auth.currentUser && auth.currentUser.uid === firebaseUser?.uid);
 
-  if (!v1 || !v2 || !v3 || !v4 || !v5 || !v6) {
-    const reason = !v1 ? 'attempt_id_mismatch' : (!v2 ? `invalid_status_${attempt?.status}` : (!v3 || !v4 ? 'invalid_firebase_user' : 'uid_mismatch'));
+  if (!v3 || !v4 || !v5 || !v6) {
+    const reason = !v3 || !v4 ? 'invalid_firebase_user' : 'uid_mismatch';
     console.log(`[AUTH-NAV] source=completeVerifiedAuthentication target=home outcome=blocked reason=${reason} attempt=${attemptId}`);
     return false;
   }
 
-  attempt.status = 'verified';
+  if (attempt) {
+    attempt.status = 'verified';
+  }
   console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=verified`);
   console.log(`[AUTH-NAV] source=completeVerifiedAuthentication target=home outcome=approved attempt=${attemptId}`);
 
@@ -4961,7 +4986,8 @@ window.handleGoogleSignInClick = async function () {
       } catch (fbErr) {
         if (fbErr.code === 'auth/account-exists-with-different-credential') {
           console.log(`[PROVIDER-LINK] existing=password pending=google.com status=requires-reauth`);
-          window.state.pendingGoogleCredential = credential;
+          const extractedEmail = googleUser.email || googleUser.user?.email || '';
+          window.state.pendingGoogleCredential = { credential, email: extractedEmail };
           cleanup();
           window.showReauthPasswordModal();
           return;
