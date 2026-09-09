@@ -14,9 +14,13 @@ import {
   signInWithRedirect,
   getRedirectResult,
   sendPasswordResetEmail,
-  signInWithCredential
+  signInWithCredential,
+  fetchSignInMethodsForEmail,
+  linkWithCredential,
+  EmailAuthProvider,
+  sendEmailVerification
 } from 'firebase/auth';
-import { doc, setDoc, getDoc } from 'firebase/firestore';
+import { doc, setDoc, getDoc, updateDoc, serverTimestamp, runTransaction } from 'firebase/firestore';
 import { GoogleMap } from '@capacitor/google-maps';
 import { Geolocation } from '@capacitor/geolocation';
 import { Capacitor } from '@capacitor/core';
@@ -206,6 +210,252 @@ function getSessionAccessState() {
   return sessionState;
 }
 window.getSessionAccessState = getSessionAccessState;
+
+// ============================================================================
+// STABILIZATION STEP 6A.2: CANONICAL USER PROFILE & PROVIDER LINKING ENGINE
+// ============================================================================
+window.normalizeEmail = function (email) {
+  return (email || '').toString().trim().toLowerCase();
+};
+
+window.resolveCanonicalUserProfile = async function (firebaseUser, authProvider = 'google.com', options = {}) {
+  if (!firebaseUser || !firebaseUser.uid) return null;
+  const uid = firebaseUser.uid;
+  const emailNorm = window.normalizeEmail(firebaseUser.email);
+  const userDocRef = doc(db, 'users', uid);
+
+  try {
+    const userSnap = await getDoc(userDocRef);
+
+    if (!userSnap.exists()) {
+      const isLegacyRajitha = (emailNorm === 'amarasinghesl@gmail.com');
+      const isNewCanonicalUser = !isLegacyRajitha;
+
+      const initialXP = isLegacyRajitha ? 320 : 50;
+      const initialRank = isLegacyRajitha ? 'Senior Explorer' : 'Novice Explorer';
+      const welcomeXPAwarded = true;
+      const welcomeBannerSeen = isLegacyRajitha;
+
+      const newProfile = {
+        uid: uid,
+        email: firebaseUser.email || '',
+        emailNormalized: emailNorm,
+        preferredDisplayName: options.preferredDisplayName || firebaseUser.displayName || (emailNorm ? emailNorm.split('@')[0] : 'Explorer'),
+        googleDisplayName: firebaseUser.displayName || '',
+        googlePhotoURL: authProvider === 'google.com' ? (firebaseUser.photoURL || '') : '',
+        passwordProfilePhotoURL: '',
+        activeAuthProvider: authProvider,
+        linkedProviders: [authProvider],
+        xp: initialXP,
+        rank: initialRank,
+        welcomeXPAwarded: welcomeXPAwarded,
+        welcomeXPAwardedAt: serverTimestamp(),
+        welcomeBannerSeen: welcomeBannerSeen,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      };
+
+      await setDoc(userDocRef, newProfile);
+      console.log(`[PROFILE-MERGE] created=true preservedXP=${isLegacyRajitha}`);
+      console.log(`[WELCOME-XP] eligible=${isNewCanonicalUser} awarded=${isNewCanonicalUser} reason=${isNewCanonicalUser ? 'new_canonical_user' : 'legacy_rajitha_preservation'}`);
+
+      return {
+        ...newProfile,
+        xp: initialXP,
+        welcomeXPAwarded: true,
+        welcomeBannerSeen: welcomeBannerSeen
+      };
+    } else {
+      const existingData = userSnap.data();
+      const preservedXP = Number.isFinite(Number(existingData.xp)) ? Number(existingData.xp) : (emailNorm === 'amarasinghesl@gmail.com' ? 320 : 0);
+
+      const welcomeXPAwarded = existingData.welcomeXPAwarded ?? true;
+      const welcomeBannerSeen = existingData.welcomeBannerSeen ?? true;
+      const updatedLinkedProviders = Array.from(new Set([...(existingData.linkedProviders || []), authProvider]));
+
+      const updates = {
+        emailNormalized: emailNorm,
+        activeAuthProvider: authProvider,
+        linkedProviders: updatedLinkedProviders,
+        welcomeXPAwarded: welcomeXPAwarded,
+        welcomeBannerSeen: welcomeBannerSeen,
+        updatedAt: serverTimestamp()
+      };
+
+      if (options.preferredDisplayName) {
+        updates.preferredDisplayName = options.preferredDisplayName;
+      } else if (!existingData.preferredDisplayName) {
+        updates.preferredDisplayName = existingData.googleDisplayName || firebaseUser.displayName || (emailNorm ? emailNorm.split('@')[0] : 'Explorer');
+      }
+
+      if (authProvider === 'google.com' && firebaseUser.photoURL) {
+        updates.googlePhotoURL = firebaseUser.photoURL;
+        if (firebaseUser.displayName) {
+          updates.googleDisplayName = firebaseUser.displayName;
+        }
+      }
+
+      await setDoc(userDocRef, updates, { merge: true });
+      console.log(`[PROFILE-MERGE] created=false preservedXP=true`);
+      console.log(`[WELCOME-XP] eligible=false awarded=false reason=existing_user`);
+
+      return {
+        ...existingData,
+        ...updates,
+        xp: preservedXP
+      };
+    }
+  } catch (err) {
+    console.error("[PROFILE-MERGE] Error resolving profile:", err);
+    return null;
+  }
+};
+
+window.showReauthPasswordModal = function () {
+  const existing = document.getElementById('reauth-password-modal');
+  if (existing) existing.remove();
+
+  const modal = document.createElement('div');
+  modal.id = 'reauth-password-modal';
+  modal.style.cssText = 'position:fixed; inset:0; background:rgba(8,43,51,0.75); backdrop-filter:blur(6px); z-index:999999; display:flex; align-items:center; justify-content:center; padding:16px;';
+  modal.innerHTML = `
+    <div style="background:#FAF5E8; color:#125463; max-width:380px; width:100%; padding:22px 20px; border-radius:20px; border:1.5px solid #DFCEAA; box-shadow:0 12px 36px rgba(0,0,0,0.35); box-sizing:border-box;">
+      <h3 style="margin:0 0 8px 0; font-size:18px; font-weight:800; color:#0B5A68;">Account Exists</h3>
+      <p style="margin:0 0 16px 0; font-size:13px; color:#475569; line-height:1.4;">
+        An account with this email address already exists using Password. Enter your password to securely link your Google account.
+      </p>
+      <input type="password" id="reauth-password-input" placeholder="Enter your password" style="width:100%; padding:10px 12px; border:1.5px solid #CBD5E1; border-radius:12px; font-size:14px; margin-bottom:14px; box-sizing:border-box;" />
+      <div style="display:flex; gap:10px; justify-content:flex-end;">
+        <button type="button" id="btn-reauth-cancel" style="padding:8px 16px; border:none; border-radius:10px; background:#E2E8F0; color:#475569; font-weight:700; cursor:pointer;">Cancel</button>
+        <button type="button" id="btn-reauth-submit" style="padding:8px 16px; border:none; border-radius:10px; background:#0B5A68; color:#FFFFFF; font-weight:700; cursor:pointer;">Link Account</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  const cleanupModal = () => modal.remove();
+
+  document.getElementById('btn-reauth-cancel').onclick = () => {
+    window.state.pendingGoogleCredential = null;
+    cleanupModal();
+  };
+
+  document.getElementById('btn-reauth-submit').onclick = async () => {
+    const passVal = document.getElementById('reauth-password-input')?.value;
+    if (!passVal) {
+      if (typeof window.showNotification === 'function') {
+        window.showNotification("Please enter your password.", "error");
+      }
+      return;
+    }
+    const cred = window.state.pendingGoogleCredential;
+    if (!cred) {
+      cleanupModal();
+      return;
+    }
+    try {
+      const email = cred.email || auth?.currentUser?.email;
+      if (!email) {
+        cleanupModal();
+        return;
+      }
+      const userCred = await signInWithEmailAndPassword(auth, email, passVal);
+      if (userCred?.user) {
+        console.log(`[PROVIDER-LINK] existing=password pending=google.com status=start`);
+        const linkResult = await linkWithCredential(userCred.user, cred);
+        console.log(`[PROVIDER-LINK] existing=password pending=google.com status=success`);
+        window.state.pendingGoogleCredential = null;
+        cleanupModal();
+        await window.handlePostAuthUserSuccess({ firebaseUser: linkResult.user, authProvider: 'google.com' });
+      }
+    } catch (err) {
+      console.error(`[PROVIDER-LINK] existing=password pending=google.com status=failed`, err.code);
+      if (typeof window.showNotification === 'function') {
+        window.showNotification("Password verification failed. Please try again.", "error");
+      }
+    }
+  };
+};
+
+window.handlePostAuthUserSuccess = async function ({ firebaseUser, authProvider, options = {}, attemptId, cleanup }) {
+  if (!firebaseUser || !firebaseUser.uid) {
+    if (cleanup) cleanup();
+    return false;
+  }
+
+  console.log(`[IDENTITY] provider=${authProvider} canonicalUidPresent=${Boolean(firebaseUser.uid)}`);
+
+  const userProfile = await window.resolveCanonicalUserProfile(firebaseUser, authProvider, options);
+
+  if (!userProfile) {
+    if (cleanup) cleanup();
+    if (typeof window.showNotification === 'function') {
+      window.showNotification("Unable to load profile. Please check network connection.", "error");
+    }
+    return false;
+  }
+
+  const preferredName = userProfile.preferredDisplayName || userProfile.googleDisplayName || 'Explorer';
+  let photoSource = 'default';
+  let displayPhoto = '/assets/royal-avatar.png';
+
+  if (authProvider === 'google.com') {
+    if (userProfile.googlePhotoURL) {
+      displayPhoto = userProfile.googlePhotoURL;
+      photoSource = 'google';
+    }
+  } else if (authProvider === 'password') {
+    if (userProfile.passwordProfilePhotoURL) {
+      displayPhoto = userProfile.passwordProfilePhotoURL;
+      photoSource = 'password-upload';
+    } else if (userProfile.googlePhotoURL) {
+      displayPhoto = userProfile.googlePhotoURL;
+      photoSource = 'google';
+    }
+  }
+  console.log(`[PROFILE-PHOTO] source=${photoSource}`);
+
+  const userSession = {
+    uid: userProfile.uid,
+    name: preferredName,
+    displayName: preferredName,
+    preferredDisplayName: preferredName,
+    email: userProfile.email,
+    emailNormalized: userProfile.emailNormalized,
+    photoURL: displayPhoto,
+    googlePhotoURL: userProfile.googlePhotoURL || '',
+    passwordProfilePhotoURL: userProfile.passwordProfilePhotoURL || '',
+    activeAuthProvider: authProvider,
+    linkedProviders: userProfile.linkedProviders || [authProvider],
+    xp: Number.isFinite(Number(userProfile.xp)) ? Number(userProfile.xp) : 0,
+    rank: userProfile.rank || 'Novice Explorer',
+    welcomeXPAwarded: userProfile.welcomeXPAwarded ?? true,
+    welcomeBannerSeen: userProfile.welcomeBannerSeen ?? true,
+    isGuest: false
+  };
+
+  window.state.user = userSession;
+  window.state.currentUser = userSession;
+  window.state.isGuest = false;
+  window.state.isLoggedIn = true;
+
+  localStorage.setItem('yathralanka_current_user', JSON.stringify(userSession));
+  localStorage.setItem('yathralanka_logged_in', 'true');
+  localStorage.removeItem('yathralanka_session_mode');
+
+  if (cleanup) cleanup();
+
+  const targetAttemptId = attemptId || window.state?.authAttempt?.id;
+  if (targetAttemptId && window.state?.authAttempt) {
+    window.state.authAttempt.status = 'exchanging-credential';
+  }
+
+  return window.completeVerifiedAuthentication({
+    attemptId: targetAttemptId,
+    firebaseUser,
+    userSession
+  });
+};
 
 // ============================================================================
 // STABILIZATION STEP 6A.1: GOOGLE AUTH TRANSACTION MODEL & APPROVAL GATE
@@ -4464,23 +4714,50 @@ function initAuthListener() {
     console.warn("Auth redirect result check error:", err);
   });
 
-  onAuthStateChanged(auth, (user) => {
+  onAuthStateChanged(auth, async (user) => {
     if (user && user.uid) {
       console.log("👤 Firebase User Authenticated:", user.displayName || user.email, "UID:", user.uid);
       if (!state) window.state = {};
-      state.currentUser = {
-        uid: user.uid,
-        email: user.email,
-        displayName: user.displayName || (user.email ? user.email.split('@')[0] : 'Explorer'),
-        photoURL: user.photoURL || 'Element Pictures/default-avatar.png'
-      };
-      state.user = { ...initialUserState, ...state.currentUser };
-      state.isGuest = false;
-      state.isLoggedIn = true;
+      const provider = user.providerData?.[0]?.providerId || 'google.com';
+      const userProfile = await window.resolveCanonicalUserProfile(user, provider);
+
+      if (userProfile) {
+        const preferredName = userProfile.preferredDisplayName || userProfile.googleDisplayName || user.displayName || 'Explorer';
+        let displayPhoto = '/assets/royal-avatar.png';
+        if (provider === 'google.com') {
+          displayPhoto = userProfile.googlePhotoURL || '/assets/royal-avatar.png';
+        } else {
+          displayPhoto = userProfile.passwordProfilePhotoURL || userProfile.googlePhotoURL || '/assets/royal-avatar.png';
+        }
+
+        const sessionObj = {
+          uid: userProfile.uid,
+          name: preferredName,
+          displayName: preferredName,
+          preferredDisplayName: preferredName,
+          email: userProfile.email,
+          emailNormalized: userProfile.emailNormalized,
+          photoURL: displayPhoto,
+          googlePhotoURL: userProfile.googlePhotoURL || '',
+          passwordProfilePhotoURL: userProfile.passwordProfilePhotoURL || '',
+          activeAuthProvider: provider,
+          linkedProviders: userProfile.linkedProviders || [provider],
+          xp: Number.isFinite(Number(userProfile.xp)) ? Number(userProfile.xp) : 0,
+          rank: userProfile.rank || 'Novice Explorer',
+          welcomeXPAwarded: userProfile.welcomeXPAwarded ?? true,
+          welcomeBannerSeen: userProfile.welcomeBannerSeen ?? true,
+          isGuest: false
+        };
+
+        state.currentUser = sessionObj;
+        state.user = sessionObj;
+        state.isGuest = false;
+        state.isLoggedIn = true;
+        localStorage.setItem('yathralanka_current_user', JSON.stringify(sessionObj));
+      }
     } else {
       console.log("👤 Firebase User Unauthenticated (No active session)");
       if (!window.state) window.state = {};
-      // Firebase Auth is authoritative: if no Firebase user exists, do not convert cached localStorage into an authenticated state!
       if (!window.state.isGuest) {
         state.currentUser = null;
         state.user = null;
@@ -4490,8 +4767,8 @@ function initAuthListener() {
     }
 
     const userNameEl = document.querySelector('.user-display-name, #profile-user-name');
-    if (userNameEl && state.user && state.user.displayName) {
-      userNameEl.textContent = state.user.displayName;
+    if (userNameEl && state.user && (state.user.preferredDisplayName || state.user.displayName)) {
+      userNameEl.textContent = state.user.preferredDisplayName || state.user.displayName;
     }
   });
 }
@@ -4590,13 +4867,12 @@ window.handleGoogleSignInClick = async function () {
     const isNative = Boolean(window.Capacitor?.isNativePlatform && window.Capacitor.isNativePlatform());
 
     // 1. Initialize GoogleAuth safely
-    console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=initialize-start`);
     try {
       await ensureGoogleAuthInitialized();
-      console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=initialize-success`);
-      window.state.authAttempt.status = 'selecting-account';
+      console.log(`[GOOGLE-CHOOSER] attempt=${attemptId} initialize=success`);
+      window.state.authAttempt.status = 'initializing-success';
     } catch (initErr) {
-      console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=failed code=init_error message=${initErr?.message || initErr}`);
+      console.log(`[GOOGLE-CHOOSER] attempt=${attemptId} initialize=failure`);
       window.state.authAttempt.status = 'failed';
       cleanup();
       if (typeof window.showNotification === 'function') {
@@ -4606,12 +4882,28 @@ window.handleGoogleSignInClick = async function () {
     }
 
     if (isNative) {
-      console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=selector-start`);
+      // 2. In native mode, call GoogleAuth.signOut() AFTER initialize to clear cached native session safely
+      console.log(`[GOOGLE-CHOOSER] attempt=${attemptId} nativeSessionClear=start`);
+      try {
+        await GoogleAuth.signOut();
+        console.log(`[GOOGLE-CHOOSER] attempt=${attemptId} nativeSessionClear=success`);
+      } catch (signOutErr) {
+        console.log(`[GOOGLE-CHOOSER] attempt=${attemptId} nativeSessionClear=failure`);
+        window.state.authAttempt.status = 'failed';
+        cleanup();
+        if (typeof window.showNotification === 'function') {
+          window.showNotification("Unable to prepare Google Account Chooser. Please try again.", "error");
+        }
+        return; // GUARD: STAY ON SIGN IN SCREEN
+      }
+
+      console.log(`[GOOGLE-CHOOSER] attempt=${attemptId} selector=start`);
+      window.state.authAttempt.status = 'selecting-account';
       let googleUser = null;
       try {
         googleUser = await GoogleAuth.signIn();
       } catch (signInErr) {
-        console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=cancelled message=${signInErr?.message || signInErr}`);
+        console.log(`[GOOGLE-CHOOSER] attempt=${attemptId} selector=cancelled`);
         window.state.authAttempt.status = 'cancelled';
         cleanup();
         if (typeof window.showNotification === 'function') {
@@ -4621,15 +4913,13 @@ window.handleGoogleSignInClick = async function () {
       }
 
       if (!googleUser) {
-        console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=cancelled message=null_user`);
+        console.log(`[GOOGLE-CHOOSER] attempt=${attemptId} selector=cancelled`);
         window.state.authAttempt.status = 'cancelled';
         cleanup();
         return; // GUARD: STAY ON SIGN IN SCREEN
       }
 
-      const email = googleUser.email || googleUser.user?.email || '';
-      console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=selector-returned`);
-
+      console.log(`[GOOGLE-CHOOSER] attempt=${attemptId} selector=returned`);
       const idToken = googleUser.authentication?.idToken || googleUser.idToken;
       if (!idToken) {
         console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=failed code=no_id_token`);
@@ -4641,21 +4931,49 @@ window.handleGoogleSignInClick = async function () {
         return; // GUARD: STAY ON SIGN IN SCREEN
       }
 
-      console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=credential-start`);
       window.state.authAttempt.status = 'exchanging-credential';
       const credential = GoogleAuthProvider.credential(idToken);
 
+      // Provider linking check if currently authenticated with Email/Password
+      if (auth.currentUser && auth.currentUser.providerData?.some(p => p.providerId === 'password')) {
+        console.log(`[PROVIDER-LINK] existing=password pending=google.com status=start`);
+        try {
+          const linkResult = await linkWithCredential(auth.currentUser, credential);
+          console.log(`[PROVIDER-LINK] existing=password pending=google.com status=success`);
+          await window.handlePostAuthUserSuccess({ firebaseUser: linkResult.user, authProvider: 'google.com', attemptId, cleanup });
+          return;
+        } catch (linkErr) {
+          console.error(`[PROVIDER-LINK] existing=password pending=google.com status=failed`, linkErr.code);
+          if (linkErr.code === 'auth/credential-already-in-use') {
+            if (typeof window.showNotification === 'function') {
+              window.showNotification("This Google account is already linked to another user.", "error");
+            }
+          }
+          cleanup();
+          return;
+        }
+      }
+
+      // Normal sign-in with credential
       let credentialResult = null;
       try {
         credentialResult = await signInWithCredential(auth, credential);
       } catch (fbErr) {
-        console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=failed code=firebase_credential_error message=${fbErr?.message || fbErr}`);
-        window.state.authAttempt.status = 'failed';
-        cleanup();
-        if (typeof window.showNotification === 'function') {
-          window.showNotification("Firebase authentication failed: " + fbErr.message, "error");
+        if (fbErr.code === 'auth/account-exists-with-different-credential') {
+          console.log(`[PROVIDER-LINK] existing=password pending=google.com status=requires-reauth`);
+          window.state.pendingGoogleCredential = credential;
+          cleanup();
+          window.showReauthPasswordModal();
+          return;
+        } else {
+          console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=failed code=${fbErr.code}`);
+          window.state.authAttempt.status = 'failed';
+          cleanup();
+          if (typeof window.showNotification === 'function') {
+            window.showNotification("Firebase authentication failed: " + fbErr.message, "error");
+          }
+          return;
         }
-        return; // GUARD: STAY ON SIGN IN SCREEN
       }
 
       const fbUser = auth?.currentUser || credentialResult?.user;
@@ -4666,24 +4984,11 @@ window.handleGoogleSignInClick = async function () {
         return; // GUARD: STAY ON SIGN IN SCREEN
       }
 
-      console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=credential-success`);
-
-      const userSession = {
-        uid: fbUser.uid,
-        name: googleUser.name || googleUser.givenName || googleUser.displayName || fbUser.displayName || 'Explorer',
-        email: email.toLowerCase().trim(),
-        authProvider: 'google',
-        isGuest: false,
-        emailVerified: true,
-        xp: 50
-      };
-
-      cleanup();
-      completeVerifiedAuthentication({ attemptId, firebaseUser: fbUser, userSession });
+      await window.handlePostAuthUserSuccess({ firebaseUser: fbUser, authProvider: 'google.com', attemptId, cleanup });
       return;
     } else {
       // WEB PLATFORM FLOW
-      console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=selector-start`);
+      console.log(`[GOOGLE-CHOOSER] attempt=${attemptId} selector=start`);
       window.state.authAttempt.status = 'selecting-account';
       const provider = new GoogleAuthProvider();
       provider.setCustomParameters({ prompt: 'select_account' });
@@ -4691,8 +4996,9 @@ window.handleGoogleSignInClick = async function () {
       let result = null;
       try {
         result = await signInWithPopup(auth, provider);
+        console.log(`[GOOGLE-CHOOSER] attempt=${attemptId} selector=returned`);
       } catch (popupErr) {
-        console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=cancelled message=${popupErr?.message || popupErr}`);
+        console.log(`[GOOGLE-CHOOSER] attempt=${attemptId} selector=cancelled`);
         window.state.authAttempt.status = 'cancelled';
         cleanup();
         return;
@@ -4707,20 +5013,7 @@ window.handleGoogleSignInClick = async function () {
       }
 
       window.state.authAttempt.status = 'exchanging-credential';
-      console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=credential-success`);
-
-      const email = fbUser.email || '';
-      const userSession = {
-        uid: fbUser.uid,
-        name: fbUser.displayName || 'Explorer',
-        email: email.toLowerCase().trim(),
-        authProvider: 'google',
-        isGuest: false,
-        emailVerified: true,
-        xp: 50
-      };
-      cleanup();
-      completeVerifiedAuthentication({ attemptId, firebaseUser: fbUser, userSession });
+      await window.handlePostAuthUserSuccess({ firebaseUser: fbUser, authProvider: 'google.com', attemptId, cleanup });
       return;
     }
   } catch (error) {
@@ -5776,9 +6069,13 @@ function attachAuthCardEvents(isModal = false) {
       if (submitBtn) submitBtn.disabled = true;
       if (btnSpinner) btnSpinner.style.display = 'block';
 
-      signInWithEmailAndPassword(auth, email, pass)
+      const emailNorm = window.normalizeEmail(email);
+      signInWithEmailAndPassword(auth, emailNorm, pass)
         .then((userCredential) => {
-          handleAuthUserSuccess(userCredential.user, `Welcome back, ${userCredential.user.displayName || "Explorer"}!`);
+          return window.handlePostAuthUserSuccess({
+            firebaseUser: userCredential.user,
+            authProvider: 'password'
+          });
         })
         .catch((err) => {
           showNotification(translateAuthError(err.code, err.message), "error");
@@ -5807,26 +6104,83 @@ function attachAuthCardEvents(isModal = false) {
       if (submitBtn) submitBtn.disabled = true;
       if (btnSpinner) btnSpinner.style.display = 'block';
 
-      createUserWithEmailAndPassword(auth, email, pass)
-        .then((userCredential) => {
-          state.user = { ...initialUserState };
-          updateProfile(userCredential.user, { displayName: name }).catch(console.error);
-          return saveUserProfile().then(() => {
-            showNotification("Account created successfully!", "success");
-            closeAuthModal();
-            if (state.pendingAction) {
-              executePendingAction();
-            } else {
-              navigate('permissions');
-            }
+      const emailNorm = window.normalizeEmail(email);
+
+      // Case A: User is currently signed in via Google with the same normalized email
+      if (auth.currentUser && window.normalizeEmail(auth.currentUser.email) === emailNorm) {
+        console.log(`[PROVIDER-LINK] existing=google.com pending=password status=start`);
+        const emailCred = EmailAuthProvider.credential(emailNorm, pass);
+        linkWithCredential(auth.currentUser, emailCred)
+          .then((linkResult) => {
+            console.log(`[PROVIDER-LINK] existing=google.com pending=password status=success`);
+            return window.handlePostAuthUserSuccess({
+              firebaseUser: linkResult.user,
+              authProvider: 'password',
+              options: { preferredDisplayName: name }
+            });
+          })
+          .catch((err) => {
+            console.error(`[PROVIDER-LINK] existing=google.com pending=password status=failed`, err.code);
+            showNotification("Failed to link password credentials: " + err.message, "error");
+          })
+          .finally(() => {
+            if (submitBtn) submitBtn.disabled = false;
+            if (btnSpinner) btnSpinner.style.display = 'none';
           });
+        return;
+      }
+
+      // Case B: Not currently signed in, check existing sign-in methods for email
+      fetchSignInMethodsForEmail(auth, emailNorm)
+        .then((methods) => {
+          if (methods && methods.includes('google.com') && !methods.includes('password')) {
+            showNotification("This email is registered with Google. Please sign in with Google first, then link your password.", "info");
+            if (submitBtn) submitBtn.disabled = false;
+            if (btnSpinner) btnSpinner.style.display = 'none';
+            return;
+          }
+
+          createUserWithEmailAndPassword(auth, emailNorm, pass)
+            .then((userCredential) => {
+              if (userCredential.user) {
+                updateProfile(userCredential.user, { displayName: name }).catch(() => {});
+                sendEmailVerification(userCredential.user).catch(() => {});
+              }
+              return window.handlePostAuthUserSuccess({
+                firebaseUser: userCredential.user,
+                authProvider: 'password',
+                options: { preferredDisplayName: name }
+              });
+            })
+            .catch((err) => {
+              showNotification(translateAuthError(err.code, err.message), "error");
+            })
+            .finally(() => {
+              if (submitBtn) submitBtn.disabled = false;
+              if (btnSpinner) btnSpinner.style.display = 'none';
+            });
         })
-        .catch((err) => {
-          showNotification(translateAuthError(err.code, err.message), "error");
-        })
-        .finally(() => {
-          if (submitBtn) submitBtn.disabled = false;
-          if (btnSpinner) btnSpinner.style.display = 'none';
+        .catch(() => {
+          // Fallback if fetchSignInMethodsForEmail is restricted
+          createUserWithEmailAndPassword(auth, emailNorm, pass)
+            .then((userCredential) => {
+              if (userCredential.user) {
+                updateProfile(userCredential.user, { displayName: name }).catch(() => {});
+                sendEmailVerification(userCredential.user).catch(() => {});
+              }
+              return window.handlePostAuthUserSuccess({
+                firebaseUser: userCredential.user,
+                authProvider: 'password',
+                options: { preferredDisplayName: name }
+              });
+            })
+            .catch((err) => {
+              showNotification(translateAuthError(err.code, err.message), "error");
+            })
+            .finally(() => {
+              if (submitBtn) submitBtn.disabled = false;
+              if (btnSpinner) btnSpinner.style.display = 'none';
+            });
         });
     }
   });
@@ -6568,7 +6922,7 @@ window.renderDashboard = function renderDashboard() {
     }
 
     const displayName = session.displayName;
-    const currentXP = isGuest ? 0 : Number(user?.xp || 50);
+    const currentXP = isGuest ? 0 : (Number.isFinite(Number(user?.xp)) ? Number(user?.xp) : 0);
     const rankInfo = typeof getRankProgress === 'function' ? getRankProgress(currentXP) : {
       currentRank: { name: 'Novice Explorer' },
       nextRank: { name: 'Pathfinder', minXP: 1000 },
@@ -6583,30 +6937,16 @@ window.renderDashboard = function renderDashboard() {
       ? `${currentXP} XP (Max)`
       : `${currentXP} / ${rankInfo.nextRankXP ? rankInfo.nextRankXP.toLocaleString() : 1000} XP`;
 
-    const visits = Number(user?.dashboard_visits || 1);
-    const showFirstTimeBanner = !isGuest && (user?.isNewRegistrant === true || user?.showFirstRewardCard === true || (visits <= 1 && user?.isNewRegistrant !== false));
+    const showFirstTimeBanner = !isGuest && user?.welcomeBannerSeen === false;
+    console.log(`[WELCOME-BANNER] visible=${showFirstTimeBanner} reason=${isGuest ? 'guest' : (user?.welcomeBannerSeen ? 'already_seen' : 'new_canonical_user')}`);
 
     if (showFirstTimeBanner && user) {
-      // Immediately mark isNewRegistrant & showFirstRewardCard false in localStorage and usersDb so visit #2+ never renders banner again
-      user.isNewRegistrant = false;
-      user.showFirstRewardCard = false;
-      user.dashboard_visits = Math.max(2, visits);
-
-      if (window.state?.user) {
-        window.state.user.isNewRegistrant = false;
-        window.state.user.showFirstRewardCard = false;
-        window.state.user.dashboard_visits = user.dashboard_visits;
-      }
-
+      user.welcomeBannerSeen = true;
+      if (window.state?.user) window.state.user.welcomeBannerSeen = true;
       try {
-        localStorage.setItem('yathralanka_active_user', JSON.stringify(user));
         localStorage.setItem('yathralanka_current_user', JSON.stringify(user));
-        const usersDb = JSON.parse(localStorage.getItem('yathralanka_users') || '{}');
-        if (user.email && usersDb[user.email]) {
-          usersDb[user.email].isNewRegistrant = false;
-          usersDb[user.email].showFirstRewardCard = false;
-          usersDb[user.email].dashboard_visits = user.dashboard_visits;
-          localStorage.setItem('yathralanka_users', JSON.stringify(usersDb));
+        if (user.uid) {
+          updateDoc(doc(db, 'users', user.uid), { welcomeBannerSeen: true }).catch(() => {});
         }
       } catch (e) { }
     }
@@ -9423,10 +9763,38 @@ function renderProfile() {
   const rankInfo = typeof getRankProgress === 'function' ? getRankProgress(totalXp) : { currentRank: { name: 'Novice Explorer' } };
   const currentRankName = rankInfo.currentRank.name;
 
-  const userName = isGuest ? 'Guest Explorer' : session.displayName;
-  const userAvatarSrc = isGuest
-    ? '/assets/royal-avatar.png'
-    : (window.state?.user?.customAvatar || localStorage.getItem('yathra_user_custom_avatar') || session.firebaseUser?.photoURL || '/assets/royal-avatar.png');
+  const userName = isGuest ? 'Guest Explorer' : (window.state?.user?.preferredDisplayName || window.state?.user?.displayName || session.displayName || 'Explorer');
+  
+  let userAvatarSrc = '/assets/royal-avatar.png';
+  let photoSource = 'default';
+  if (isGuest) {
+    userAvatarSrc = '/assets/royal-avatar.png';
+    photoSource = 'default';
+  } else {
+    const userObj = window.state?.user || {};
+    const activeProvider = userObj.activeAuthProvider || 'password';
+    if (activeProvider === 'google.com') {
+      if (userObj.googlePhotoURL) {
+        userAvatarSrc = userObj.googlePhotoURL;
+        photoSource = 'google';
+      } else {
+        userAvatarSrc = '/assets/royal-avatar.png';
+        photoSource = 'default';
+      }
+    } else {
+      if (userObj.passwordProfilePhotoURL || userObj.customAvatar || localStorage.getItem('yathra_user_custom_avatar')) {
+        userAvatarSrc = userObj.passwordProfilePhotoURL || userObj.customAvatar || localStorage.getItem('yathra_user_custom_avatar');
+        photoSource = 'password-upload';
+      } else if (userObj.googlePhotoURL) {
+        userAvatarSrc = userObj.googlePhotoURL;
+        photoSource = 'google';
+      } else {
+        userAvatarSrc = '/assets/royal-avatar.png';
+        photoSource = 'default';
+      }
+    }
+  }
+  console.log(`[PROFILE-PHOTO] source=${photoSource}`);
 
   const medalsCount = isGuest ? 0 : (window.state?.user?.medals || window.state?.unlockedMedals?.length || 0);
   const sitesCount = isGuest ? 0 : (window.state?.user?.sitesVisited || 0);
