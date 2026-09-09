@@ -277,8 +277,19 @@ window.saveStoredUserProfile = function (uid, profileObj) {
   } catch (e) {}
 };
 
-window.clearActiveUserSession = function () {
-  console.log('[SESSION-CLEAR] Clearing active in-memory user session and active pointers');
+window.updateAuthAttempt = function (attemptId, status) {
+  const attempt = window.state?.authAttempt;
+  if (!attempt || attempt.id !== attemptId) {
+    console.error(`[AUTH-TRACE] attempt=${attemptId || 'none'} stage=transaction_missing`);
+    return false;
+  }
+  attempt.status = status;
+  return true;
+};
+
+window.clearActiveUserData = function (options = {}) {
+  const preserveAuthAttempt = options?.preserveAuthAttempt === true;
+  console.log(`[SESSION-CLEAR] Clearing active in-memory user data (preserveAuthAttempt=${preserveAuthAttempt})`);
   if (!window.state) window.state = {};
 
   // Increment auth generation to cancel any pending async writes for previous session
@@ -290,11 +301,16 @@ window.clearActiveUserSession = function () {
   window.state.activeUid = null;
   window.state.xp = 0;
   window.state.userXP = 0;
-  window.state.authAttempt = null;
-  window.state.pendingGoogleCredential = null;
-  window.state.pendingProfileSync = null;
   window.state.siteProgress = {};
   window.state.completedSites = {};
+
+  if (!preserveAuthAttempt) {
+    window.state.authAttempt = null;
+    window.state.pendingGoogleCredential = null;
+    window.state.pendingProfileSync = null;
+    window.state.isAuthenticating = false;
+    window.state.authTransition = null;
+  }
 
   // Clear shared active-user pointers from localStorage (leaving UID-scoped profiles intact)
   localStorage.removeItem('yathralanka_current_user');
@@ -305,6 +321,20 @@ window.clearActiveUserSession = function () {
   localStorage.removeItem('yathra_user_xp');
   localStorage.removeItem('yathralanka_user_xp');
   localStorage.removeItem('yathralanka_logged_in');
+};
+
+window.clearActiveUserSession = function () {
+  window.clearActiveUserData({ preserveAuthAttempt: false });
+};
+
+window.clearAuthTransaction = function () {
+  if (!window.state) return;
+  console.log('[AUTH-TRACE] Clearing active auth transaction and transition states');
+  window.state.authAttempt = null;
+  window.state.pendingGoogleCredential = null;
+  window.state.pendingProfileSync = null;
+  window.state.isAuthenticating = false;
+  window.state.authTransition = null;
 };
 
 window.resolveCanonicalUserProfile = async function (firebaseUser, authProvider = 'google.com', options = {}) {
@@ -4945,6 +4975,13 @@ function initAuthListener() {
     } else {
       console.log("👤 Firebase User Unauthenticated (No active session)");
       if (!window.state) window.state = {};
+
+      if (window.state?.authTransition === 'switching-provider') {
+        console.log('[AUTH-STATE] transient sign-out ignored during provider switch');
+        console.log(`[AUTH-TRACE] stage=firebase_signout_observer_ignored`);
+        return;
+      }
+
       const sessionMode = localStorage.getItem('yathralanka_session_mode');
 
       if (sessionMode !== 'guest') {
@@ -5024,6 +5061,10 @@ window.handleGoogleSignInClick = async function () {
     return;
   }
 
+  if (typeof window.clearAuthTransaction === 'function') {
+    window.clearAuthTransaction();
+  }
+
   if (!window.state) window.state = {};
   const attemptId = 'attempt_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
   window.state.isAuthenticating = true;
@@ -5034,8 +5075,8 @@ window.handleGoogleSignInClick = async function () {
     startedAt: new Date().toISOString()
   };
 
-  // Stage: button_pressed
-  console.log(`[AUTH-TRACE] attempt=${attemptId} stage=button_pressed`);
+  // Stage: attempt_created
+  console.log(`[AUTH-TRACE] attempt=${attemptId} stage=attempt_created attemptPresent=${Boolean(window.state?.authAttempt)}`);
   const firebaseUserExisted = Boolean(auth?.currentUser);
   const preProviderIds = auth?.currentUser?.providerData?.map(p => p.providerId) || [];
   console.log(`[AUTH-TRACE] attempt=${attemptId} firebaseUserExisted=${firebaseUserExisted} providerIds=${JSON.stringify(preProviderIds)}`);
@@ -5057,7 +5098,10 @@ window.handleGoogleSignInClick = async function () {
   document.body.appendChild(loader);
 
   const cleanup = () => {
-    if (window.state) window.state.isAuthenticating = false;
+    if (window.state) {
+      window.state.isAuthenticating = false;
+      window.state.authTransition = null;
+    }
     document.querySelectorAll('#auth-loading-overlay').forEach(el => el.remove());
     googleBtns.forEach(btn => {
       btn.removeAttribute('disabled');
@@ -5069,27 +5113,32 @@ window.handleGoogleSignInClick = async function () {
   try {
     const isNative = Boolean(window.Capacitor?.isNativePlatform && window.Capacitor.isNativePlatform());
 
-    // Stage: firebase_precondition
-    console.log(`[AUTH-TRACE] attempt=${attemptId} stage=firebase_precondition`);
-    if (typeof window.clearActiveUserSession === 'function') {
-      window.clearActiveUserSession();
+    // Clear previous user identity & progress without destroying current authAttempt
+    if (typeof window.clearActiveUserData === 'function') {
+      window.clearActiveUserData({ preserveAuthAttempt: true });
     }
+    console.log(`[AUTH-TRACE] attempt=${attemptId} stage=user_data_cleared attemptPresent=${Boolean(window.state?.authAttempt)}`);
     localStorage.removeItem('yathralanka_session_mode');
+
+    // Firebase sign-out with transient protection flag
     if (auth && auth.currentUser) {
+      window.state.authTransition = 'switching-provider';
+      console.log(`[AUTH-TRACE] attempt=${attemptId} stage=firebase_signout_started`);
       try {
         await signOut(auth);
+        console.log(`[AUTH-TRACE] attempt=${attemptId} stage=firebase_signout_completed`);
       } catch (signOutErr) {}
     }
 
     if (isNative) {
-      // Stage: native_google_signout_started
-      console.log(`[AUTH-TRACE] attempt=${attemptId} stage=native_google_signout_started`);
       try {
         await ensureGoogleAuthInitialized();
+        console.log(`[AUTH-TRACE] attempt=${attemptId} stage=google_initialized`);
       } catch (initErr) {
         console.log(`[AUTH-TRACE] attempt=${attemptId} stage=native_google_signout_started outcome=failed code=init_failed message=Google Auth initialization failed.`);
-        window.state.authAttempt.status = 'failed';
+        window.updateAuthAttempt(attemptId, 'failed');
         cleanup();
+        if (typeof window.clearAuthTransaction === 'function') window.clearAuthTransaction();
         if (typeof window.showNotification === 'function') {
           window.showNotification("Google authentication could not be verified.", "error");
         }
@@ -5098,11 +5147,12 @@ window.handleGoogleSignInClick = async function () {
 
       try {
         await GoogleAuth.signOut();
-        console.log(`[AUTH-TRACE] attempt=${attemptId} stage=native_google_signout_completed`);
+        console.log(`[AUTH-TRACE] attempt=${attemptId} stage=native_session_cleared`);
       } catch (signOutErr) {
         console.log(`[AUTH-TRACE] attempt=${attemptId} stage=native_google_signout_started outcome=failed code=signout_failed message=Failed to clear native session.`);
-        window.state.authAttempt.status = 'failed';
+        window.updateAuthAttempt(attemptId, 'failed');
         cleanup();
+        if (typeof window.clearAuthTransaction === 'function') window.clearAuthTransaction();
         if (typeof window.showNotification === 'function') {
           window.showNotification("Unable to prepare Google Account Chooser. Please try again.", "error");
         }
@@ -5111,14 +5161,28 @@ window.handleGoogleSignInClick = async function () {
 
       // Stage: chooser_started
       console.log(`[AUTH-TRACE] attempt=${attemptId} stage=chooser_started`);
-      window.state.authAttempt.status = 'selecting-account';
+      const attemptValid = window.state?.authAttempt?.id === attemptId;
+      console.log(`[AUTH-TRACE] attempt=${attemptId} stage=chooser_precondition attemptValid=${attemptValid}`);
+
+      if (!attemptValid) {
+        console.error(`[AUTH-TRACE] attempt=${attemptId} stage=transaction_missing`);
+        cleanup();
+        if (typeof window.clearAuthTransaction === 'function') window.clearAuthTransaction();
+        if (typeof window.showNotification === 'function') {
+          window.showNotification("Authentication attempt was interrupted. Please try again.", "error");
+        }
+        return;
+      }
+
+      window.updateAuthAttempt(attemptId, 'selecting-account');
       let googleUser = null;
       try {
         googleUser = await GoogleAuth.signIn();
       } catch (signInErr) {
         console.log(`[AUTH-TRACE] attempt=${attemptId} stage=chooser_started outcome=cancelled code=user_cancelled message=Account selection was cancelled.`);
-        window.state.authAttempt.status = 'cancelled';
+        window.updateAuthAttempt(attemptId, 'cancelled');
         cleanup();
+        if (typeof window.clearAuthTransaction === 'function') window.clearAuthTransaction();
         if (typeof window.showNotification === 'function') {
           window.showNotification("Google Sign-In cancelled.", "info");
         }
@@ -5127,8 +5191,9 @@ window.handleGoogleSignInClick = async function () {
 
       if (!googleUser) {
         console.log(`[AUTH-TRACE] attempt=${attemptId} stage=chooser_started outcome=cancelled code=user_cancelled message=Account selection was cancelled.`);
-        window.state.authAttempt.status = 'cancelled';
+        window.updateAuthAttempt(attemptId, 'cancelled');
         cleanup();
+        if (typeof window.clearAuthTransaction === 'function') window.clearAuthTransaction();
         return;
       }
 
@@ -5138,8 +5203,9 @@ window.handleGoogleSignInClick = async function () {
 
       if (!idToken) {
         console.log(`[AUTH-TRACE] attempt=${attemptId} stage=id_token_present outcome=failed code=no_token message=Google did not return a valid sign-in token.`);
-        window.state.authAttempt.status = 'failed';
+        window.updateAuthAttempt(attemptId, 'failed');
         cleanup();
+        if (typeof window.clearAuthTransaction === 'function') window.clearAuthTransaction();
         if (typeof window.showNotification === 'function') {
           window.showNotification("Google did not return a valid sign-in token. Please try again.", "error");
         }
@@ -5151,7 +5217,7 @@ window.handleGoogleSignInClick = async function () {
 
       // Stage: firebase_exchange_started
       console.log(`[AUTH-TRACE] attempt=${attemptId} stage=firebase_exchange_started`);
-      window.state.authAttempt.status = 'exchanging-credential';
+      window.updateAuthAttempt(attemptId, 'exchanging-credential');
       const credential = GoogleAuthProvider.credential(idToken);
 
       let credentialResult = null;
@@ -5182,8 +5248,9 @@ window.handleGoogleSignInClick = async function () {
         }
 
         console.log(`[AUTH-TRACE] attempt=${attemptId} stage=firebase_exchange_started outcome=failed code=${code} message=${msg}`);
-        window.state.authAttempt.status = 'failed';
+        window.updateAuthAttempt(attemptId, 'failed');
         cleanup();
+        if (typeof window.clearAuthTransaction === 'function') window.clearAuthTransaction();
         if (typeof window.showNotification === 'function') {
           window.showNotification(userMsg, "error");
         }
@@ -5196,8 +5263,9 @@ window.handleGoogleSignInClick = async function () {
       const fbUser = auth?.currentUser || credentialResult?.user;
       if (!fbUser || !fbUser.uid) {
         console.log(`[AUTH-TRACE] attempt=${attemptId} stage=firebase_exchange_succeeded outcome=failed code=null_uid message=Google authentication could not be verified.`);
-        window.state.authAttempt.status = 'failed';
+        window.updateAuthAttempt(attemptId, 'failed');
         cleanup();
+        if (typeof window.clearAuthTransaction === 'function') window.clearAuthTransaction();
         if (typeof window.showNotification === 'function') {
           window.showNotification("Google authentication could not be verified.", "error");
         }
@@ -5210,11 +5278,12 @@ window.handleGoogleSignInClick = async function () {
       // Stage: navigation_started
       console.log(`[AUTH-TRACE] attempt=${attemptId} stage=navigation_started`);
       await window.handlePostAuthUserSuccess({ firebaseUser: fbUser, authProvider: 'google.com', attemptId, cleanup });
+      if (typeof window.clearAuthTransaction === 'function') window.clearAuthTransaction();
       return;
     } else {
       // WEB PLATFORM FLOW
       console.log(`[AUTH-TRACE] attempt=${attemptId} stage=chooser_started`);
-      window.state.authAttempt.status = 'selecting-account';
+      window.updateAuthAttempt(attemptId, 'selecting-account');
       const provider = new GoogleAuthProvider();
       provider.setCustomParameters({ prompt: 'select_account' });
 
@@ -5224,8 +5293,9 @@ window.handleGoogleSignInClick = async function () {
         console.log(`[AUTH-TRACE] attempt=${attemptId} stage=chooser_returned`);
       } catch (popupErr) {
         console.log(`[AUTH-TRACE] attempt=${attemptId} stage=chooser_started outcome=cancelled code=user_cancelled message=Account selection was cancelled.`);
-        window.state.authAttempt.status = 'cancelled';
+        window.updateAuthAttempt(attemptId, 'cancelled');
         cleanup();
+        if (typeof window.clearAuthTransaction === 'function') window.clearAuthTransaction();
         if (typeof window.showNotification === 'function') {
           window.showNotification("Google Sign-In cancelled.", "info");
         }
@@ -5235,8 +5305,9 @@ window.handleGoogleSignInClick = async function () {
       const fbUser = result?.user || auth?.currentUser;
       if (!fbUser || !fbUser.uid) {
         console.log(`[AUTH-TRACE] attempt=${attemptId} stage=firebase_exchange_started outcome=failed code=null_web_user message=Google authentication could not be verified.`);
-        window.state.authAttempt.status = 'failed';
+        window.updateAuthAttempt(attemptId, 'failed');
         cleanup();
+        if (typeof window.clearAuthTransaction === 'function') window.clearAuthTransaction();
         if (typeof window.showNotification === 'function') {
           window.showNotification("Google authentication could not be verified.", "error");
         }
@@ -5247,12 +5318,14 @@ window.handleGoogleSignInClick = async function () {
       console.log(`[AUTH-TRACE] attempt=${attemptId} stage=session_created`);
       console.log(`[AUTH-TRACE] attempt=${attemptId} stage=navigation_started`);
       await window.handlePostAuthUserSuccess({ firebaseUser: fbUser, authProvider: 'google.com', attemptId, cleanup });
+      if (typeof window.clearAuthTransaction === 'function') window.clearAuthTransaction();
       return;
     }
-  } catch (error) {
-    console.log(`[AUTH-TRACE] attempt=${attemptId} stage=firebase_exchange_started outcome=failed code=exception message=${error?.message || error}`);
-    if (window.state?.authAttempt) window.state.authAttempt.status = 'failed';
+  } catch (err) {
+    console.error('[AUTH-TRACE] Unhandled error during Google sign-in:', err);
+    if (typeof window.updateAuthAttempt === 'function') window.updateAuthAttempt(attemptId, 'failed');
     cleanup();
+    if (typeof window.clearAuthTransaction === 'function') window.clearAuthTransaction();
     if (typeof window.showNotification === 'function') {
       window.showNotification("Google authentication could not be verified.", "error");
     }
