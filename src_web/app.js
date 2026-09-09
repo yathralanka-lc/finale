@@ -183,18 +183,24 @@ function getRankProgress(totalXP) {
 }
 window.getRankProgress = getRankProgress;
 
-// ============================================================================
-// STABILIZATION STEP 6A: CENTRALIZED SESSION & GUEST IDENTITY
-// ============================================================================
-function getSessionAccessState() {
-  const isGuestMode = localStorage.getItem('yathralanka_session_mode') === 'guest';
-  const fbUser = (typeof auth !== 'undefined' && auth.currentUser) ? auth.currentUser : null;
-  const isAuthenticated = !isGuestMode && fbUser !== null && Boolean(fbUser.uid);
-  const isGuest = !isAuthenticated;
+window.getSessionMode = function () {
+  if (typeof auth !== 'undefined' && auth && auth.currentUser && auth.currentUser.uid) {
+    return 'authenticated';
+  }
+  if (sessionStorage.getItem('yathralanka_session_mode') === 'guest' || window.state?.sessionMode === 'guest') {
+    return 'guest';
+  }
+  return 'signed_out';
+};
 
-  const mode = isGuest ? 'guest' : 'authenticated';
-  const displayName = isGuest ? 'Guest Explorer' : (fbUser.displayName || window.state?.user?.name || 'Explorer');
-  const uid = isGuest ? null : fbUser.uid;
+function getSessionAccessState() {
+  const mode = window.getSessionMode();
+  const fbUser = (typeof auth !== 'undefined' && auth && auth.currentUser) ? auth.currentUser : null;
+  const isAuthenticated = mode === 'authenticated';
+  const isGuest = mode === 'guest';
+
+  const displayName = isAuthenticated ? (fbUser?.displayName || window.state?.user?.name || 'Explorer') : (isGuest ? 'Guest Explorer' : 'Explorer');
+  const uid = isAuthenticated ? fbUser?.uid : null;
 
   const sessionState = {
     mode,
@@ -313,6 +319,10 @@ window.clearActiveUserData = function (options = {}) {
   }
 
   // Clear shared active-user pointers from localStorage (leaving UID-scoped profiles intact)
+  sessionStorage.removeItem('yathralanka_session_mode');
+  if (localStorage.getItem('yathralanka_session_mode') === 'guest') {
+    localStorage.removeItem('yathralanka_session_mode');
+  }
   localStorage.removeItem('yathralanka_current_user');
   localStorage.removeItem('yathralanka_active_user');
   localStorage.removeItem('yathralanka_user');
@@ -1053,6 +1063,12 @@ window.initAppRouter = function () {
     return;
   }
 
+  // Migrate legacy persistent guest flag from localStorage
+  if (localStorage.getItem('yathralanka_session_mode') === 'guest') {
+    console.log('[STARTUP] Purging legacy persistent guest flag from localStorage');
+    localStorage.removeItem('yathralanka_session_mode');
+  }
+
   // Deterministic Startup Routing & Timeout Protection
   const sessionMode = localStorage.getItem('yathralanka_session_mode');
 
@@ -1062,9 +1078,7 @@ window.initAppRouter = function () {
         console.warn('[STARTUP-TIMEOUT] Auth did not settle within 6s. Executing fallback routing.');
         window.__appSettled = true;
         const currentMode = localStorage.getItem('yathralanka_session_mode');
-        if (currentMode === 'guest') {
-          if (typeof window.continueAsGuest === 'function') window.continueAsGuest();
-        } else if (currentMode === 'authenticated' && auth?.currentUser?.uid) {
+        if (currentMode === 'authenticated' && auth?.currentUser?.uid) {
           const uid = auth.currentUser.uid;
           const cached = window.getStoredUserProfile(uid) || {
             uid,
@@ -1082,6 +1096,12 @@ window.initAppRouter = function () {
           window.state.isLoggedIn = true;
           if (typeof window.executeAppNavigation === 'function') window.executeAppNavigation('home');
         } else {
+          if (!window.state) window.state = {};
+          window.state.currentUser = null;
+          window.state.user = null;
+          window.state.isGuest = false;
+          window.state.isLoggedIn = false;
+          window.state.sessionMode = 'signed_out';
           if (typeof window.executeAppNavigation === 'function') window.executeAppNavigation('welcome');
         }
       }
@@ -1096,18 +1116,17 @@ window.initAppRouter = function () {
   window.__appSettled = true;
   if (window.__startupTimeoutHandle) clearTimeout(window.__startupTimeoutHandle);
 
-  if (sessionMode === 'guest') {
-    if (typeof window.continueAsGuest === 'function') window.continueAsGuest();
-    return;
+  if (!window.state) window.state = {};
+  window.state.currentUser = null;
+  window.state.user = null;
+  window.state.isGuest = false;
+  window.state.isLoggedIn = false;
+  window.state.sessionMode = 'signed_out';
+  if (typeof window.executeAppNavigation === 'function') {
+    window.executeAppNavigation('welcome');
+  } else if (typeof window.navigate === 'function') {
+    window.navigate('welcome');
   }
-
-  if (window.state) {
-    window.state.user = null;
-    window.state.currentUser = null;
-    window.state.isGuest = true;
-    window.state.isLoggedIn = false;
-  }
-  window.navigate('welcome');
 };
 
 
@@ -3059,8 +3078,11 @@ window.continueAsGuest = async function (e) {
       }
     }
 
-    // 2. Establish explicit guest mode in localStorage
-    localStorage.setItem('yathralanka_session_mode', 'guest');
+    // 2. Establish explicit session-scoped guest mode
+    sessionStorage.setItem('yathralanka_session_mode', 'guest');
+    if (localStorage.getItem('yathralanka_session_mode') === 'guest') {
+      localStorage.removeItem('yathralanka_session_mode');
+    }
     localStorage.removeItem('yathralanka_current_user');
     localStorage.removeItem('yathralanka_active_user');
     localStorage.removeItem('yathralanka_user');
@@ -3082,6 +3104,7 @@ window.continueAsGuest = async function (e) {
     window.state.currentUser = guestUser;
     window.state.isGuest = true;
     window.state.isLoggedIn = false;
+    window.state.sessionMode = 'guest';
     window.state.currentScreen = 'home';
     window.state.currentParams = {};
 
@@ -3739,6 +3762,7 @@ window.renderProfileScreen = function (params = {}) {
 // ============================================================================
 window.handleSignOut = function () {
   console.log("🔒 Signing out session completely...");
+  sessionStorage.removeItem('yathralanka_session_mode');
   localStorage.setItem('yathralanka_session_mode', 'signed_out');
   if (typeof window.clearActiveUserSession === 'function') {
     window.clearActiveUserSession();
@@ -3758,8 +3782,9 @@ window.handleSignOut = function () {
   if (window.state) {
     window.state.user = null;
     window.state.currentUser = null;
-    window.state.isGuest = true;
+    window.state.isGuest = false;
     window.state.isLoggedIn = false;
+    window.state.sessionMode = 'signed_out';
     window.state.currentScreen = 'welcome';
   }
 
@@ -4912,20 +4937,6 @@ function initAuthListener() {
 
     if (user && user.uid) {
       console.log("👤 Firebase User Authenticated:", user.displayName || user.email, "UID:", user.uid);
-      const sessionMode = localStorage.getItem('yathralanka_session_mode');
-
-      if (sessionMode === 'guest' || sessionMode === 'signed_out') {
-        console.log(`[AUTH-ROUTING] Session mode is '${sessionMode}'; active guest/signed-out preference preserved.`);
-        if (sessionMode === 'guest') {
-          if (!window.state) window.state = {};
-          window.state.isGuest = true;
-          window.state.isLoggedIn = false;
-          if (window.state.currentScreen === 'welcome' || !window.state.currentScreen) {
-            if (typeof window.executeAppNavigation === 'function') window.executeAppNavigation('home');
-          }
-        }
-        return;
-      }
 
       if (!window.state) window.state = {};
       if (window.state.activeUid && window.state.activeUid !== user.uid) {
@@ -4956,7 +4967,9 @@ function initAuthListener() {
       window.state.user = initialUserObj;
       window.state.isGuest = false;
       window.state.isLoggedIn = true;
+      window.state.sessionMode = 'authenticated';
       localStorage.setItem('yathralanka_session_mode', 'authenticated');
+      sessionStorage.removeItem('yathralanka_session_mode');
       window.saveStoredUserProfile(user.uid, initialUserObj);
       localStorage.setItem('yathralanka_logged_in', 'true');
 
@@ -4982,23 +4995,31 @@ function initAuthListener() {
         return;
       }
 
-      const sessionMode = localStorage.getItem('yathralanka_session_mode');
+      const isSessionGuest = sessionStorage.getItem('yathralanka_session_mode') === 'guest' || window.state?.sessionMode === 'guest';
 
-      if (sessionMode !== 'guest') {
-        window.state.currentUser = null;
-        window.state.user = null;
+      if (isSessionGuest) {
+        console.log('[AUTH-ROUTING] Active current-session guest mode preserved.');
         window.state.isGuest = true;
         window.state.isLoggedIn = false;
-        localStorage.removeItem('yathralanka_logged_in');
-        if (sessionMode === 'authenticated') {
-          localStorage.removeItem('yathralanka_session_mode');
-        }
-        if (window.state.currentScreen === 'home' || !window.state.currentScreen) {
-          if (typeof window.executeAppNavigation === 'function') {
-            window.executeAppNavigation('welcome');
-          } else if (typeof window.navigate === 'function') {
-            window.navigate('welcome');
-          }
+        window.state.sessionMode = 'guest';
+        return;
+      }
+
+      window.state.currentUser = null;
+      window.state.user = null;
+      window.state.isGuest = false;
+      window.state.isLoggedIn = false;
+      window.state.sessionMode = 'signed_out';
+      localStorage.removeItem('yathralanka_logged_in');
+      if (localStorage.getItem('yathralanka_session_mode') === 'authenticated' || localStorage.getItem('yathralanka_session_mode') === 'guest') {
+        localStorage.removeItem('yathralanka_session_mode');
+      }
+
+      if (window.state.currentScreen === 'home' || !window.state.currentScreen) {
+        if (typeof window.executeAppNavigation === 'function') {
+          window.executeAppNavigation('welcome');
+        } else if (typeof window.navigate === 'function') {
+          window.navigate('welcome');
         }
       }
     }
