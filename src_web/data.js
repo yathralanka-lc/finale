@@ -104,6 +104,8 @@ export const sitesData = [
     openStatus: "Open now",
     description: "Built to commemorate the independence of Sri Lanka from British rule in 1948, featuring traditional Kandyan architectural stonework and 60 carved stone lions.",
     image: "/Element%20Pictures/Independence%20Memorial%20Hall.jpg",
+    // Temporary physical-device proximity testing location. Do not replace with production coordinates until testing is complete.
+    locationMode: 'test',
     latitude: 6.846738,
     longitude: 79.993303,
     referenceImage: "/assets/images/independence_hall.webp",

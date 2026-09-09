@@ -106,6 +106,228 @@ window.enterMap = function (params = {}) {
   return null;
 };
 
+// ============================================================================
+// STABILIZATION STEP 6A: CENTRALIZED AUTHORITATIVE RANK SYSTEM
+// ============================================================================
+const RANK_DEFINITIONS = [
+  { id: 'novice-explorer', name: 'Novice Explorer', minXP: 0, maxXP: 999 },
+  { id: 'pathfinder', name: 'Pathfinder', minXP: 1000, maxXP: 2499 },
+  { id: 'heritage-seeker', name: 'Heritage Seeker', minXP: 2500, maxXP: 4999 },
+  { id: 'cultural-guardian', name: 'Cultural Guardian', minXP: 5000, maxXP: 9999 },
+  { id: 'legacy-ambassador', name: 'Legacy Ambassador', minXP: 10000, maxXP: null }
+];
+window.RANK_DEFINITIONS = RANK_DEFINITIONS;
+
+function getRankProgress(totalXP) {
+  let xp = Number(totalXP);
+  if (isNaN(xp) || xp < 0 || !isFinite(xp)) {
+    xp = 0;
+  }
+  xp = Math.floor(xp);
+
+  let currentRank = RANK_DEFINITIONS[0];
+  let nextRank = RANK_DEFINITIONS[1];
+
+  for (let i = 0; i < RANK_DEFINITIONS.length; i++) {
+    const rank = RANK_DEFINITIONS[i];
+    if (rank.maxXP === null) {
+      if (xp >= rank.minXP) {
+        currentRank = rank;
+        nextRank = null;
+      }
+    } else {
+      if (xp >= rank.minXP && xp <= rank.maxXP) {
+        currentRank = rank;
+        nextRank = RANK_DEFINITIONS[i + 1] || null;
+        break;
+      }
+    }
+  }
+
+  const isHighestRank = nextRank === null;
+  const currentRankStartXP = currentRank.minXP;
+  const xpIntoCurrentRank = xp - currentRankStartXP;
+
+  let nextRankXP = null;
+  let xpRequiredForNextRank = 0;
+  let progressPercent = 100;
+
+  if (!isHighestRank && nextRank) {
+    nextRankXP = nextRank.minXP;
+    xpRequiredForNextRank = nextRankXP - currentRankStartXP;
+    if (xpRequiredForNextRank > 0) {
+      progressPercent = Math.min(100, Math.max(0, Math.floor((xpIntoCurrentRank / xpRequiredForNextRank) * 100)));
+    } else {
+      progressPercent = 100;
+    }
+  }
+
+  const result = {
+    currentRank,
+    nextRank,
+    currentXP: xp,
+    currentRankStartXP,
+    nextRankXP,
+    xpIntoCurrentRank,
+    xpRequiredForNextRank,
+    progressPercent,
+    isHighestRank
+  };
+
+  console.log(`[RANK] xp=${xp} current=${currentRank.id} next=${nextRank ? nextRank.id : 'none'} progress=${progressPercent}`);
+  return result;
+}
+window.getRankProgress = getRankProgress;
+
+// ============================================================================
+// STABILIZATION STEP 6A: CENTRALIZED SESSION & GUEST IDENTITY
+// ============================================================================
+function getSessionAccessState() {
+  const isGuestMode = localStorage.getItem('yathralanka_session_mode') === 'guest';
+  const fbUser = (typeof auth !== 'undefined' && auth.currentUser) ? auth.currentUser : null;
+  const isAuthenticated = !isGuestMode && fbUser !== null && Boolean(fbUser.uid);
+  const isGuest = !isAuthenticated;
+
+  const mode = isGuest ? 'guest' : 'authenticated';
+  const displayName = isGuest ? 'Guest Explorer' : (fbUser.displayName || window.state?.user?.name || 'Explorer');
+  const uid = isGuest ? null : fbUser.uid;
+
+  const sessionState = {
+    mode,
+    isGuest,
+    isAuthenticated,
+    firebaseUser: isAuthenticated ? fbUser : null,
+    displayName,
+    uid,
+    canPersistProgress: isAuthenticated
+  };
+
+  console.log(`[SESSION] mode=${mode} firebaseUidPresent=${Boolean(fbUser?.uid)}`);
+  return sessionState;
+}
+window.getSessionAccessState = getSessionAccessState;
+
+// ============================================================================
+// STABILIZATION STEP 6A: CENTRALIZED ACCESS CONTROL & UNIVERSAL GATE
+// ============================================================================
+const PROTECTED_CAPABILITIES = {
+  FULL_LANDMARK: 'full-landmark',
+  QUIZ: 'quiz',
+  VERIFICATION: 'verification',
+  CHECKPOINT: 'checkpoint',
+  EARN_XP: 'earn-xp',
+  REDEEM_REWARD: 'redeem-reward',
+  ACTIVISM_ACTION: 'activism-action',
+  PROFILE_ACTION: 'profile-action'
+};
+window.PROTECTED_CAPABILITIES = PROTECTED_CAPABILITIES;
+
+function requestProtectedAccess({ capability, originRoute, originParams = {}, onAuthorized }) {
+  const session = getSessionAccessState();
+  if (session.isAuthenticated) {
+    console.log(`[ACCESS] capability=${capability} result=allowed route=${originRoute}`);
+    if (typeof onAuthorized === 'function') onAuthorized();
+    return true;
+  }
+
+  console.log(`[ACCESS] capability=${capability} result=guest-gated route=${originRoute}`);
+  showUniversalGuestModal({ capability, originRoute, originParams, onAuthorized });
+  return false;
+}
+window.requestProtectedAccess = requestProtectedAccess;
+
+function showUniversalGuestModal({ capability, originRoute, originParams = {}, onAuthorized }) {
+  document.querySelectorAll('#guest-access-modal-overlay, .auth-modal-overlay, #auth-required-modal-overlay').forEach(el => el.remove());
+
+  const overlay = document.createElement('div');
+  overlay.id = 'guest-access-modal-overlay';
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+  overlay.setAttribute('aria-labelledby', 'guest-modal-title');
+  overlay.style.cssText = `
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.65);
+    backdrop-filter: blur(4px);
+    z-index: 20000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    box-sizing: border-box;
+  `;
+
+  overlay.innerHTML = `
+    <div style="background: #FFFFFF; border-radius: 20px; padding: 24px 20px; width: 100%; max-width: 360px; box-shadow: 0 20px 40px rgba(0,0,0,0.3); text-align: center; position: relative;">
+      <div style="width: 52px; height: 52px; background: #FEF3C7; border: 1.5px solid #F59E0B; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 16px;">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#92400E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+          <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+        </svg>
+      </div>
+
+      <h3 id="guest-modal-title" style="margin: 0 0 10px; font-size: 18px; font-weight: 800; color: #125463;">
+        Sign in to continue
+      </h3>
+
+      <p style="margin: 0 0 20px; font-size: 13px; color: #475569; line-height: 1.5; font-weight: 500;">
+        Create an account or sign in to open the complete landmark experience, take quizzes, verify visits and save XP.
+      </p>
+
+      <div style="display: flex; flex-direction: column; gap: 10px;">
+        <button id="guest-modal-btn-signin" style="min-height: 44px; width: 100%; background: #125463; color: #FFFFFF; font-size: 14px; font-weight: 700; border: none; border-radius: 12px; cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 10px 16px;">
+          Sign in or create account
+        </button>
+
+        <button id="guest-modal-btn-keep" style="min-height: 44px; width: 100%; background: #F1F5F9; color: #475569; font-size: 14px; font-weight: 700; border: none; border-radius: 12px; cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 10px 16px;">
+          Keep exploring
+        </button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+  document.body.classList.add('modal-open');
+
+  console.log(`[GUEST-GATE] opened capability=${capability} origin=${originRoute}`);
+
+  const handleKeepExploring = (e) => {
+    if (e) { e.stopPropagation(); e.preventDefault(); }
+    overlay.remove();
+    document.body.classList.remove('modal-open');
+    console.log(`[GUEST-GATE] keep-exploring origin=${originRoute}`);
+  };
+
+  const handleSignIn = (e) => {
+    if (e) { e.stopPropagation(); e.preventDefault(); }
+    overlay.remove();
+    document.body.classList.remove('modal-open');
+    console.log(`[GUEST-GATE] auth-selected origin=${originRoute}`);
+
+    if (!window.state) window.state = {};
+    window.state.pendingAuthReturn = {
+      originRoute: originRoute || window.state?.currentScreen || 'home',
+      originParams: originParams || window.state?.currentParams || {},
+      capability,
+      onAuthorized
+    };
+
+    if (typeof window.executeAppNavigation === 'function') {
+      window.executeAppNavigation('auth');
+    }
+  };
+
+  document.getElementById('guest-modal-btn-keep')?.addEventListener('click', handleKeepExploring);
+  document.getElementById('guest-modal-btn-signin')?.addEventListener('click', handleSignIn);
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) handleKeepExploring(e);
+  });
+}
+window.showUniversalGuestModal = showUniversalGuestModal;
+
 window.resolveSiteFromId = function (siteId) {
   if (!siteId && siteId !== 0) return null;
   const pool = window.sitesData || (typeof sitesData !== 'undefined' ? sitesData : []);
@@ -646,6 +868,17 @@ window.renderDashboardHeader = function () {
   }
   const xpCount = currentUser.xp || 50;
 
+  const rankInfo = typeof getRankProgress === 'function' ? getRankProgress(xpCount) : {
+    currentRank: { name: 'Novice Explorer' },
+    nextRank: { name: 'Pathfinder', minXP: 1000 },
+    progressPercent: 0,
+    isHighestRank: false
+  };
+  const currentRankName = rankInfo.currentRank.name;
+  const nextRankName = rankInfo.isHighestRank ? 'Highest Rank Reached' : rankInfo.nextRank.name;
+  const progressLabel = rankInfo.isHighestRank ? `Highest Rank (${currentRankName})` : `Progress to ${nextRankName}`;
+  const progressText = rankInfo.isHighestRank ? `${xpCount} XP (Max)` : `${xpCount} / ${rankInfo.nextRankXP ? rankInfo.nextRankXP.toLocaleString() : 1000} XP`;
+
   headerCard.innerHTML = `
     <!-- Main Explorer Card -->
     <div style="background: #FFFFFF; border-radius: 18px; padding: 18px 20px; box-shadow: 0 4px 18px rgba(0,0,0,0.06); margin-bottom: 14px; position: relative;">
@@ -655,7 +888,7 @@ window.renderDashboardHeader = function () {
             Welcome, ${displayName}!
           </h2>
           <div style="font-size: 12px; color: #64748B; margin-top: 4px; font-weight: 600;">
-            Level: Novice Explorer • ${xpCount} XP
+            Rank: ${currentRankName} • ${xpCount} XP
           </div>
         </div>
         
@@ -666,14 +899,14 @@ window.renderDashboardHeader = function () {
         </div>
       </div>
 
-      <!-- XP Progress Bar (50 / 1000 XP) -->
+      <!-- XP Progress Bar -->
       <div style="margin-top: 14px;">
         <div style="display: flex; justify-content: space-between; font-size: 11px; font-weight: 700; color: #64748B; margin-bottom: 5px;">
-          <span>Progress to Next Rank (Novice Explorer)</span>
-          <span>${xpCount} / 1000 XP</span>
+          <span>${progressLabel}</span>
+          <span>${progressText}</span>
         </div>
         <div style="width: 100%; height: 7px; background: #E2E8F0; border-radius: 999px; overflow: hidden;">
-          <div style="width: ${(xpCount / 1000) * 100}%; height: 100%; background: linear-gradient(90deg, #F5A623, #125463); border-radius: 999px;"></div>
+          <div style="width: ${rankInfo.progressPercent}%; height: 100%; background: linear-gradient(90deg, #F5A623, #125463); border-radius: 999px;"></div>
         </div>
       </div>
     </div>
@@ -723,6 +956,7 @@ window.handlePostLoginSuccess = function (userData) {
     window.state.isLoggedIn = true;
     window.state.isGuest = false;
 
+    localStorage.removeItem('yathralanka_session_mode');
     localStorage.setItem('yathralanka_current_user', JSON.stringify(userSession));
     localStorage.setItem('yathralanka_logged_in', 'true');
 
@@ -730,11 +964,29 @@ window.handlePostLoginSuccess = function (userData) {
     const loader = document.getElementById('auth-loading-overlay');
     if (loader) loader.remove();
 
+    if (window.state?.pendingAuthReturn) {
+      const pending = window.state.pendingAuthReturn;
+      window.state.pendingAuthReturn = null;
+      console.log(`[AUTH-RETURN] action=resume origin=${pending.originRoute}`);
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          if (typeof pending.onAuthorized === 'function') {
+            pending.onAuthorized();
+          } else if (typeof window.executeAppNavigation === 'function') {
+            window.executeAppNavigation(pending.originRoute, pending.originParams || {});
+          }
+        }, 50);
+      });
+      return;
+    }
+
     // Defer navigation using requestAnimationFrame to free the UI thread from native bridge locks
     requestAnimationFrame(() => {
       setTimeout(() => {
         try {
-          if (typeof window.navigate === 'function') {
+          if (typeof window.executeAppNavigation === 'function') {
+            window.executeAppNavigation('home');
+          } else if (typeof window.navigate === 'function') {
             window.navigate('home');
           } else {
             window.location.hash = '#home';
@@ -2265,10 +2517,13 @@ window.continueAsGuest = function (e) {
     e.stopPropagation();
   }
 
+  // 1. Establish explicit guest mode in localStorage
+  localStorage.setItem('yathralanka_session_mode', 'guest');
   localStorage.removeItem('yathralanka_current_user');
   localStorage.removeItem('yathralanka_active_user');
   localStorage.removeItem('yathralanka_user');
 
+  // 2. Clear in-memory authenticated profile state
   const guestUser = {
     name: "Guest Explorer",
     displayName: "Guest Explorer",
@@ -2276,6 +2531,7 @@ window.continueAsGuest = function (e) {
     emailVerified: false,
     xp: 0,
     level: "Novice Explorer",
+    rank: "Novice Explorer",
     dashboard_visits: 1
   };
 
@@ -2286,6 +2542,18 @@ window.continueAsGuest = function (e) {
   window.state.isLoggedIn = false;
   window.state.currentScreen = 'home';
   window.state.currentParams = {};
+
+  // 3. Safely call Firebase signOut if Firebase session is active
+  if (typeof auth !== 'undefined' && auth.currentUser) {
+    console.log('[GUEST-ENTRY] firebaseSignOut=start');
+    signOut(auth).then(() => {
+      console.log('[GUEST-ENTRY] firebaseSignOut=success');
+    }).catch((err) => {
+      console.error('[GUEST-ENTRY] firebaseSignOut=failure', err);
+    });
+  }
+
+  // DO NOT call native GoogleAuth.signOut() in the guest-entry path
 
   if (typeof window.executeAppNavigation === 'function') {
     window.executeAppNavigation('home');
@@ -2984,6 +3252,42 @@ window.executeAppNavigation = function (targetScreen, params = {}) {
     }
 
     console.log(`[NAV] transition start: requested=${targetScreen}, before=${screenBefore}, currentScreen=${window.state?.currentScreen}`);
+    
+    // ROUTE-LEVEL GUEST GUARD (Part 3 & Part 5)
+    const protectedRoutes = [
+      'site-detail',
+      'site-details',
+      'site_preview_full',
+      'quiz',
+      'verification',
+      'checkpoint',
+      'quest-social',
+      'quest-food',
+      'quest-wandering',
+      'quest-wildlife',
+      'quest-warrior'
+    ];
+
+    if (protectedRoutes.includes(targetScreen)) {
+      const session = typeof getSessionAccessState === 'function' ? getSessionAccessState() : { isGuest: true };
+      if (session.isGuest) {
+        console.log(`[ROUTE-GUARD] route=${targetScreen} result=guest-gated`);
+        window.state.currentScreen = screenBefore || 'home';
+        if (typeof requestProtectedAccess === 'function') {
+          requestProtectedAccess({
+            capability: (targetScreen === 'quiz' ? 'quiz' : (targetScreen === 'verification' ? 'verification' : 'full-landmark')),
+            originRoute: screenBefore || 'home',
+            originParams: params || {},
+            onAuthorized: () => {
+              window.executeAppNavigation(targetScreen, params);
+            }
+          });
+        }
+        return false;
+      }
+      console.log(`[ROUTE-GUARD] route=${targetScreen} result=allowed`);
+    }
+
     console.log('[NAV-COUNT]', JSON.stringify({
       source: `tap:${targetScreen}`,
       requestedTarget: targetScreen,
@@ -4371,9 +4675,24 @@ window.restoreGuestOrigin = function () {
 
 // Back Action on Screen 002
 window.handleAuthBackClick = function () {
-  const destination = window.state.authOrigin || window.state.guestPreviousScreen || 'home';
-  console.log(`↩ Returning guest to: ${destination}`);
-  window.navigate(destination, window.state.currentParams || {});
+  if (window.state?.pendingAuthReturn) {
+    const pending = window.state.pendingAuthReturn;
+    window.state.pendingAuthReturn = null;
+    console.log(`[AUTH-RETURN] action=back origin=${pending.originRoute}`);
+    if (typeof window.executeAppNavigation === 'function') {
+      window.executeAppNavigation(pending.originRoute, pending.originParams || {});
+    } else if (typeof window.navigate === 'function') {
+      window.navigate(pending.originRoute, pending.originParams || {});
+    }
+    return;
+  }
+  const destination = window.state?.authOrigin || window.state?.guestPreviousScreen || 'welcome';
+  console.log(`[AUTH-RETURN] action=back origin=${destination}`);
+  if (typeof window.executeAppNavigation === 'function') {
+    window.executeAppNavigation(destination, window.state?.currentParams || {});
+  } else if (typeof window.navigate === 'function') {
+    window.navigate(destination, window.state?.currentParams || {});
+  }
 };
 
 window.handleAuthBackNavigation = function () {
@@ -4960,8 +5279,8 @@ window.restoreAuthTabs = function () {
 // 3. SCREEN 002: AUTH CARD COMPONENT
 // ============================================================================
 function renderAuthCard() {
-  const isSignUp = window.state.authActiveTab === 'signup';
-  const showBackButton = Boolean(window.state.authOrigin);
+  const isSignUp = window.state?.authActiveTab === 'signup';
+  const showBackButton = Boolean(window.state?.authOrigin || window.state?.pendingAuthReturn);
 
   return `
     <div class="screen auth-screen auth-screen-container" style="position: relative; width: 100%; height: 100%; background-color: #0B5A68; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; padding: 28px 18px 20px 18px; box-sizing: border-box; overflow-y: auto;">
@@ -4975,7 +5294,7 @@ function renderAuthCard() {
           id="btn-auth-back" 
           type="button" 
           onclick="window.handleAuthBackClick()"
-          style="position: absolute; top: 14px; left: 14px; z-index: 100; padding: 5px 12px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, 0.25); background: rgba(255, 255, 255, 0.15); backdrop-filter: blur(8px); color: #FFFFFF; font-size: 12.5px; font-weight: 700; cursor: pointer;">
+          style="position: absolute; top: 14px; left: 14px; z-index: 100; min-width: 44px; min-height: 44px; padding: 8px 14px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, 0.25); background: rgba(255, 255, 255, 0.15); backdrop-filter: blur(8px); color: #FFFFFF; font-size: 13px; font-weight: 700; cursor: pointer; display: flex; align-items: center; justify-content: center;">
           ← Back
         </button>
       ` : ''}
@@ -5137,94 +5456,13 @@ function closeAuthModal() {
 }
 
 function showAuthRequiredModal(config = {}) {
-  // Clean up any existing auth modals using querySelectorAll to prevent orphan backdrops
-  document.querySelectorAll('#auth-required-modal-overlay, .auth-modal-overlay').forEach(el => el.remove());
-
-  const title = config.title || "Sign In Required";
-  const message = config.message || "Sign in or create an account to access this feature.";
-  const redirectView = config.redirectView || "site-detail";
-  const targetId = config.targetId || null;
-
-  if (targetId) {
-    state.pendingAction = {
-      type: redirectView === 'site-detail' ? 'SITE_DETAIL' : 'NAVIGATION',
-      siteId: targetId,
-      redirectView: redirectView,
-      callback: () => {
-        const pool = window.sitesData || (typeof sitesData !== 'undefined' ? sitesData : []);
-        state.activeSite = pool.find(s => s.id === targetId);
-        if (redirectView) navigate(redirectView);
-      }
-    };
-  }
-
-  const modalHtml = `
-    <div class="auth-modal-overlay" id="auth-required-modal-overlay" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(8, 43, 51, 0.65); backdrop-filter: blur(4px); z-index: 999999; display: flex; align-items: center; justify-content: center; padding: 20px; box-sizing: border-box; animation: fadeIn 0.2s ease-out;">
-      <div class="auth-modal-card" id="auth-required-modal-card" style="background: #FFFFFF; border-radius: 20px; padding: 24px; max-width: 360px; width: 100%; box-shadow: 0 20px 40px rgba(0,0,0,0.3); border: 1.5px solid #DFCEAA; text-align: center; box-sizing: border-box; pointer-events: auto;">
-        <h3 class="auth-modal-title" style="margin: 0 0 10px 0; font-size: 18px; font-weight: 800; color: #125463;">${title}</h3>
-        <p class="auth-modal-message" style="margin: 0 0 20px 0; font-size: 13px; color: #475569; line-height: 1.5;">${message}</p>
-        
-        <div class="auth-modal-actions" style="display: flex; flex-direction: column; gap: 10px;">
-          <button class="btn-primary auth-modal-btn-primary" id="btn-modal-signin" style="width: 100%; background: #0B5A68; color: #FFFFFF; font-size: 14px; font-weight: 800; border: none; padding: 12px; border-radius: 12px; cursor: pointer; box-shadow: 0 4px 12px rgba(11,90,104,0.25);">Sign In / Register</button>
-          <button class="btn-secondary auth-modal-btn-secondary" id="btn-modal-dismiss" style="width: 100%; background: #F1F5F9; color: #475569; font-size: 13px; font-weight: 700; border: 1px solid #CBD5E1; padding: 10px; border-radius: 12px; cursor: pointer;">Continue Exploring</button>
-        </div>
-      </div>
-    </div>
-  `;
-
-  // Mount inside the mobile frame container if available, otherwise document.body
-  const targetHost = document.querySelector('.app-viewport') ||
-    document.querySelector('.iphone-chassis') ||
-    document.getElementById('app') ||
-    document.body;
-
-  targetHost.insertAdjacentHTML('beforeend', modalHtml);
-
-  function closeModal() {
-    document.querySelectorAll('#auth-required-modal-overlay, .auth-modal-overlay').forEach(el => el.remove());
-    document.body.classList.remove('modal-open');
-  }
-
-  const modalOverlay = document.getElementById('auth-required-modal-overlay');
-  const modalCard = document.getElementById('auth-required-modal-card');
-  const btnSignIn = document.getElementById('btn-modal-signin');
-  const btnDismiss = document.getElementById('btn-modal-dismiss');
-
-  // Prevent inside card clicks from bubbling to the overlay backdrop
-  if (modalCard) {
-    modalCard.addEventListener('click', (e) => {
-      e.stopPropagation();
-    });
-  }
-
-  // Dismiss when clicking backdrop outside the card
-  if (modalOverlay) {
-    modalOverlay.addEventListener('click', (e) => {
-      e.stopPropagation();
-      e.preventDefault();
-      closeModal();
-    });
-  }
-
-  if (btnDismiss) {
-    btnDismiss.addEventListener('click', (e) => {
-      e.stopPropagation();
-      e.preventDefault();
-      closeModal();
-    });
-  }
-
-  if (btnSignIn) {
-    btnSignIn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      closeModal();
-      if (typeof window.openAuthAsGuest === 'function') {
-        window.openAuthAsGuest(window.state?.currentScreen || 'home');
-      } else if (typeof window.openAuthScreen === 'function') {
-        window.openAuthScreen('signin');
-      }
-    });
-  }
+  const originRoute = window.state?.currentScreen || 'home';
+  showUniversalGuestModal({
+    capability: config.capability || 'full-landmark',
+    originRoute: originRoute,
+    originParams: config.targetId ? { id: config.targetId } : (window.state?.currentParams || {}),
+    onAuthorized: config.callback || null
+  });
 }
 
 function closeAuthRequiredModal() {
@@ -6217,7 +6455,8 @@ window.renderDashboard = function renderDashboard() {
         console.error("XP recalculation error:", xpErr);
       }
     }
-    const isGuest = Boolean(window.state?.isGuest || (!window.state?.user?.email && !localStorage.getItem('yathralanka_current_user')));
+    const session = typeof getSessionAccessState === 'function' ? getSessionAccessState() : { isGuest: true, displayName: 'Guest Explorer' };
+    const isGuest = session.isGuest;
 
     let user;
     if (isGuest) {
@@ -6238,8 +6477,22 @@ window.renderDashboard = function renderDashboard() {
         { name: "Explorer", xp: 50, dashboard_visits: 2 };
     }
 
-    const displayName = isGuest ? "Guest Explorer" : (user?.name || user?.displayName || (typeof extractDisplayName === 'function' ? extractDisplayName(user) : "Explorer"));
-    const currentXP = Number(user?.xp || (isGuest ? 0 : 50));
+    const displayName = session.displayName;
+    const currentXP = isGuest ? 0 : Number(user?.xp || 50);
+    const rankInfo = typeof getRankProgress === 'function' ? getRankProgress(currentXP) : {
+      currentRank: { name: 'Novice Explorer' },
+      nextRank: { name: 'Pathfinder', minXP: 1000 },
+      progressPercent: 0,
+      isHighestRank: false
+    };
+
+    const currentRankName = rankInfo.currentRank.name;
+    const nextRankName = rankInfo.isHighestRank ? 'Highest Rank Reached' : rankInfo.nextRank.name;
+    const progressLabel = rankInfo.isHighestRank ? `Highest Rank (${currentRankName})` : `Progress to ${nextRankName}`;
+    const progressText = rankInfo.isHighestRank
+      ? `${currentXP} XP (Max)`
+      : `${currentXP} / ${rankInfo.nextRankXP ? rankInfo.nextRankXP.toLocaleString() : 1000} XP`;
+
     const visits = Number(user?.dashboard_visits || 1);
     const showFirstTimeBanner = !isGuest && (user?.isNewRegistrant === true || user?.showFirstRewardCard === true || (visits <= 1 && user?.isNewRegistrant !== false));
 
@@ -6282,7 +6535,7 @@ window.renderDashboard = function renderDashboard() {
                   Welcome, ${displayName}!
                 </h2>
                 <p style="margin: 3px 0 0 0; font-size: 12px; font-weight: 600; color: #786542;">
-                  Level: Novice Explorer • ${currentXP} XP
+                  Rank: ${currentRankName} • ${currentXP} XP
                 </p>
               </div>
               <div style="background: #FDE68A; border: 1px solid #F59E0B; padding: 6px 12px; border-radius: 12px; text-align: center; min-width: 38px;">
@@ -6294,11 +6547,11 @@ window.renderDashboard = function renderDashboard() {
             <!-- Progress Bar -->
             <div style="margin-top: 8px;">
               <div style="display: flex; justify-content: space-between; font-size: 11px; font-weight: 700; color: #786542; margin-bottom: 4px;">
-                <span>Progress to Next Rank (Novice Explorer)</span>
-                <span>${currentXP} / 1000 XP</span>
+                <span>${progressLabel}</span>
+                <span>${progressText}</span>
               </div>
               <div style="width: 100%; height: 8px; background: #EBDCBE; border-radius: 99px; overflow: hidden;">
-                <div style="width: ${Math.max(4, Math.min((currentXP / 1000) * 100, 100))}%; height: 100%; background: linear-gradient(90deg, #F5A623, #0B5A68); border-radius: 99px;"></div>
+                <div style="width: ${rankInfo.progressPercent}%; height: 100%; background: linear-gradient(90deg, #F5A623, #0B5A68); border-radius: 99px;"></div>
               </div>
             </div>
           </div>
@@ -9072,17 +9325,22 @@ function renderProfile() {
   if (typeof window.recalculateTotalXP === 'function') {
     window.recalculateTotalXP();
   }
-  const currentRankName = state.user.xp > 0 ? state.user.rank : 'Novice Explorer';
-  const userAvatarSrc = window.state?.user?.customAvatar ||
-    localStorage.getItem('yathra_user_custom_avatar') ||
-    (window.auth?.currentUser?.photoURL || window.state?.user?.picture || window.state?.user?.photoURL) ||
-    '/assets/royal-avatar.png';
 
-  const userName = auth?.currentUser ? auth.currentUser.displayName || 'Heritage Explorer' : (window.state?.user?.name || 'Heritage Explorer');
-  const totalXp = state.user.xp || 0;
-  const medalsCount = state.user.medals || window.state?.unlockedMedals?.length || 0;
-  const sitesCount = state.user.sitesVisited || 0;
-  const quizzesCount = state.user.quizzesPassed || 0;
+  const session = typeof getSessionAccessState === 'function' ? getSessionAccessState() : { isGuest: true, displayName: 'Guest Explorer' };
+  const isGuest = session.isGuest;
+
+  const totalXp = isGuest ? 0 : Number(window.state?.user?.xp || 0);
+  const rankInfo = typeof getRankProgress === 'function' ? getRankProgress(totalXp) : { currentRank: { name: 'Novice Explorer' } };
+  const currentRankName = rankInfo.currentRank.name;
+
+  const userName = isGuest ? 'Guest Explorer' : session.displayName;
+  const userAvatarSrc = isGuest
+    ? '/assets/royal-avatar.png'
+    : (window.state?.user?.customAvatar || localStorage.getItem('yathra_user_custom_avatar') || session.firebaseUser?.photoURL || '/assets/royal-avatar.png');
+
+  const medalsCount = isGuest ? 0 : (window.state?.user?.medals || window.state?.unlockedMedals?.length || 0);
+  const sitesCount = isGuest ? 0 : (window.state?.user?.sitesVisited || 0);
+  const quizzesCount = isGuest ? 0 : (window.state?.user?.quizzesPassed || 0);
 
   return `
     <div class="screen profile-container royal-vault-screen" id="profile-view" style="position: relative; height: 100%; box-sizing: border-box; overflow-y: auto; padding-top: max(env(safe-area-inset-top), 48px); padding-bottom: 90px; background: #F8F5EE;">
