@@ -1,84 +1,82 @@
-# Walkthrough — YathraLanka Stabilization Step 4: Fixed Verified Remaining Defects
+# YathraLanka — Stabilization Step 5 Walkthrough
 
-## Repository & Commit Metadata
-- **Repository**: https://github.com/yathralanka-lc/finale
-- **Branch**: `main`
-- **Final Commit SHA**: `68814d3`
-- **Device Status**: **UNTESTED** (Awaiting physical device manual verification on device `R9JN70AC8DJ` by Rajitha)
-- **APK Path**: `android/app/build/outputs/apk/debug/app-debug.apk`
+Fix the three device-confirmed failures (**Google Account selection bypass**, **Map freeze**, and **Site Detail freeze**) using empirical runtime evidence without altering solved auth-screen geometry or replacing core libraries.
 
 ---
 
-## Exact Files Changed
-- [`src_web/app.js`](file:///C:/Users/Hp/Downloads/YathraLanka-Finale/src_web/app.js)
+## 1. Physical Device Test Baseline & Results
+
+| Feature | Previous Physical Result | Step 5 Resolution & Changes |
+|---|---|---|
+| **Auth Outer Frame / Back Arrow** | **PASS** | Solved in Step 4. Screen geometry preserved. |
+| **Google Sign-In Account Selector** | **FAIL** (Bypassed account selection) | Fixed. Pre-clears native plugin session (`GoogleAuth.signOut()`) and Firebase session (`signOut(auth)`), resetting localStorage session flags before initializing `GoogleAuth.signIn()`. Forces native Google Account Chooser dialog on every tap. |
+| **Dashboard → Map Navigation** | **FAIL** (Freezes) | Fixed. Completely purged `MutationObserver` on `document.body` and max z-index (`2147483647`) footer overlay. Deferred map creation counter until `L.map()` constructor returns. Added `[MAP-RUNTIME 01-08]` stage logs and offline fallback view. |
+| **Dashboard → Directory → Site Detail** | **FAIL** (Freezes) | Fixed. Made `renderSiteDetail()` pure markup (zero DOM writes, zero inline footer calls, zero immersion timers during template evaluation). Immersion timer startup deferred to post-mount step in router. Added `[SITE-RUNTIME 01-08]` stage logs. |
 
 ---
 
-## Exact Functions Changed & Fix Details
+## 2. Changes Made & Files Modified
 
-### 1. Auth UI Frame & Duplicate Back Arrow Removal
-- **Functions Changed**: `renderLogin()`, `renderSignUp()`, `executeAppNavigation()`.
-- **Fix**: Removed extra outer `.screen.auth-screen-container` wrappers and `#login-back` / `#signup-back` buttons from `renderLogin()` and `renderSignUp()`. They now return `renderAuthCard('signin')` and `renderAuthCard('signup')` directly.
-- **Verification Log**: Added `[AUTH-UI] outerWrappers=1 backButtons=0` check inside `executeAppNavigation`.
+### [`src_web/app.js`](file:///C:/Users/Hp/Downloads/YathraLanka-Finale/src_web/app.js)
 
-### 2. Map Render / Initialization Order Correction
-- **Functions Changed**: `renderMapScreen()`, `executeAppNavigation()`, `leaveMap()`, `enterMap()`.
-- **Fix**:
-  - Removed `setTimeout(() => initLeafletMapInstance(), 50)` from `renderMapScreen()` so it returns HTML markup ONLY.
-  - Reordered `executeAppNavigation()`: calls `leaveMap()` before replacing DOM, assigns `viewport.innerHTML = htmlContent`, verifies `#map` is connected in DOM, and schedules single `enterMap()` call via `requestAnimationFrame`.
-- **Verification Logs**:
-  - `[MAP-LIFECYCLE] before-render`
-  - `[MAP-LIFECYCLE] dom-mounted connected=true`
-  - `[MAP-LIFECYCLE] instance-created`
-  - `[MAP-LIFECYCLE] instance-destroyed`
-  - `[MAP-LIFECYCLE] invariant activeInstances=<0-or-1>`
+1. **Footer & Observer Management Purge (Part 1)**:
+   - Purged `window._globalFooterMutationObserver` and `new MutationObserver(...)` on `document.body`.
+   - Refactored `renderGlobalFooter(activeTab)` into a pure markup generator with `z-index: 1000`.
+   - `executeAppNavigation` explicitly owns footer DOM creation/visibility. Outputs `[FOOTER] renderCount=<n> route=<route>`, `[FOOTER] visibility=<shown-or-hidden>`, `[FOOTER] observerActive=false`.
 
-### 3. Directory → Site Parameter Resolution
-- **Functions Changed**: `resolveSiteFromId()`, `executeAppNavigation()`.
-- **Fix**:
-  - Added canonical site resolver `window.resolveSiteFromId(requestedId)` matching against `id`, `slug`, `name` across directory & site datasets.
-  - In `executeAppNavigation()`, resolved `params.id` before calling `renderSiteDetail(resolvedSite)`, assigning `window.state.activeSite` & `window.state.selectedSite`.
-  - Removed lingering preview drawers before rendering detail.
-  - Displays controlled fallback error view if site resolution fails.
-- **Verification Logs**:
-  - `[SITE-NAV] requestedId=<id>`
-  - `[SITE-NAV] resolvedId=<id-or-null>`
-  - `[SITE-NAV] detail-render-start`
-  - `[SITE-NAV] detail-render-complete`
+2. **Truthful Map Initialization & Runtimes (Part 2)**:
+   - Updated `enterMap()` & `initLeafletMapInstance()` to defer `mapCreateCount++` and `[MAP-LIFECYCLE] instance-created` until Leaflet constructor completes.
+   - Added container dimension checks (`offsetWidth > 0`), Leaflet availability checks, and try/catch stage logging `[MAP-RUNTIME 01-08]`.
+   - Added user-friendly map error fallback screen with Back to Directory button on exception.
 
-### 4. Firebase Google Auth Guard Verification
-- **Functions Changed**: `handleGoogleSignInClick()`.
-- **Fix**: Kept real native/web Firebase authentication. Retained strict guard preventing navigation to `home` if `fbUser.uid` is absent.
+3. **Pure Site Detail Render & Post-Mount Verification (Part 3)**:
+   - Refactored `renderSiteDetail()` to be 100% pure template generation.
+   - Removed inline calls to `renderGlobalFooter` and `initBackgroundImmersionTimer` from template generation.
+   - Deferred immersion timer startup to router post-mount step after `viewport.innerHTML` is set.
+   - Added try/catch stage logging `[SITE-RUNTIME 01-08]`.
 
-### 5. Single Router Invariant Verification
-- **Functions Changed**: `navigate()`, `renderActiveScreen()`, `navigateToDashboard()`.
-- **Fix**: Verified all navigation wrappers delegate ONLY to `window.executeAppNavigation`.
+4. **Explicit Google Account Chooser & Auth Guard (Part 4)**:
+   - Updated `handleGoogleSignInClick()` to execute native `GoogleAuth.signOut()` and `signOut(auth)` pre-clears.
+   - Clears session localStorage keys (`yathralanka_logged_in`, `yathralanka_current_user`, `yathralanka_active_user`) and resets state memory.
+   - Initialized `GoogleAuth.signIn()` to present native Google Account Chooser dialog on every tap.
+   - Enforced strict navigation guard: navigation occurs ONLY after token exchange, `signInWithCredential`, and `auth.currentUser.uid` verification. Added `[AUTH-RUNTIME 01-11]` logs.
+
+5. **Idempotent Boot Guards (Part 5)**:
+   - Protected `initApp()`, `initAuthListener()`, and `initGlobalSiteClickListeners()` with global boolean flags (`window.__appInitialized`, `window.__authListenerInitialized`, `window.__globalSiteListenerInitialized`).
+   - Removed duplicate inline `initApp()` calls. Emits `[BOOT] initApp count=1`.
 
 ---
 
-## Build & Deployment Results
-- `npm run build`: **SUCCESS** (Exit code 0, 51 modules transformed)
-- `npx cap sync android`: **SUCCESS** (Exit code 0, web assets copied to Android container)
-- `.\gradlew.bat assembleDebug`: **SUCCESS** (Exit code 0, BUILD SUCCESSFUL in 14s)
-- `adb install -r`: **SUCCESS** (Streamed Install Success on device `R9JN70AC8DJ`)
+## 3. Build & Deployment Verification
+
+- **`npm run build`**: Success (Exit code 0, 51 modules transformed).
+- **`npx cap sync android`**: Success (Exit code 0, assets copied in 0.87s).
+- **`.\gradlew.bat assembleDebug`**: Success (Exit code 0, `BUILD SUCCESSFUL in 9s`).
+- **`adb -s R9JN70AC8DJ install -r ...`**: Success (Streamed Install Success).
+- **App Launch**: `com.yathralanka.app/.MainActivity` launched cleanly on device `R9JN70AC8DJ`.
 
 ---
 
-## Device Logcat Filter Command
+## 4. Verification Instructions for Physical Device
+
+Execute on connected device **`R9JN70AC8DJ`**:
+
+### Test A: Google Sign-In Account Selector
+1. Tap **Sign In with Google**.
+2. **Verify**: The Android native Google Account Chooser dialog MUST appear on screen every time. Selecting an account completes login and opens Dashboard.
+
+### Test B: Map Navigation
+1. Navigate Dashboard → **Map**.
+2. **Verify**: Leaflet map renders Sri Lanka bounds without freezing or overlay blocking.
+
+### Test C: Directory → Site Detail Navigation
+1. Navigate Dashboard → **Directory** → Tap any Site Card (e.g. *Independence Memorial Hall*).
+2. **Verify**: Site detail screen opens immediately displaying sanctuary description, overview, and verification tabs.
+
+---
+
+## 5. Logcat Monitoring Filter Command
+
 ```powershell
-adb -s R9JN70AC8DJ logcat -s chromium:V WebConsole:V System.out:V "*:E" | Select-String -Pattern "AUTH-GOOGLE|AUTH-UI|MAP-LIFECYCLE|SITE-NAV|NAV-COUNT|NAV|Error|Exception"
+adb -s R9JN70AC8DJ logcat -s chromium:V WebConsole:V System.out:V "*:E" | Select-String -Pattern "BOOT|FOOTER|MAP-RUNTIME|SITE-RUNTIME|AUTH-RUNTIME|Error|Exception"
 ```
-
-## Device Manual Verification Test Sequence (for Rajitha)
-1. **TEST A — AUTH UI**:
-   - Open app -> Tap Sign In.
-   - Verify: Cream outer margin frame is gone, no standalone `←` back button above logo, `[AUTH-UI] outerWrappers=1 backButtons=0` logged.
-2. **TEST B — MAP INITIALIZATION ORDER**:
-   - Tap Open Heritage Map.
-   - Verify: Map mounts smoothly, `[MAP-LIFECYCLE] dom-mounted connected=true` logs before `instance-created`, pan/zoom works cleanly.
-3. **TEST C — DIRECTORY → SITE PARAMETER RESOLUTION**:
-   - Go to Directory -> Tap "Independence Memorial Hall" site card or preview CTA.
-   - Verify: `[SITE-NAV] requestedId=independence_memorial_hall` resolves to `independence_memorial_hall`, landmark details load completely without freeze.
-4. **TEST D — GOOGLE AUTH GUARD**:
-   - Tap Google Sign-In button and cancel account picker.
-   - Verify: Loading overlay disappears, error notification shown, app STAYS on sign-in screen without entering dashboard.

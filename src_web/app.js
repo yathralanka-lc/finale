@@ -74,13 +74,17 @@ window.leaveMap = function () {
 };
 
 window.enterMap = function (params = {}) {
+  console.log('[MAP-RUNTIME 01] route-received');
   const mapElement = document.getElementById('map') || document.getElementById('yathra-main-map');
   const isConnected = Boolean(mapElement?.isConnected);
-  console.log(`[MAP-LIFECYCLE] dom-mounted connected=${isConnected}`);
+  const rect = mapElement ? mapElement.getBoundingClientRect() : { width: 0, height: 0 };
+  const sizeStr = `${Math.round(rect.width)}x${Math.round(rect.height)}`;
+
+  console.log(`[MAP-RUNTIME 02] dom-mounted connected=${isConnected} size=${sizeStr}`);
 
   if (!mapElement || !isConnected) {
-    console.warn('[MAP-LIFECYCLE] map container element #map not yet connected to DOM');
-    return;
+    console.warn('[MAP-RUNTIME ERROR] stage=dom-mount name=ContainerMissing message=Container #map missing or disconnected');
+    return null;
   }
 
   if (window.activeLeafletMap) {
@@ -88,15 +92,18 @@ window.enterMap = function (params = {}) {
     window.leaveMap();
   }
 
-  mapCreateCount++;
-  console.log('[MAP-LIFECYCLE] instance-created');
-  const activeInstances = 1;
-  console.log(`[MAP-LIFECYCLE] enterMap: createCount=${mapCreateCount}, destroyCount=${mapDestroyCount}, activeInstanceCount=${activeInstances}, currentScreen=${window.state?.currentScreen}`);
-  console.log(`[MAP-LIFECYCLE] invariant activeInstances=${activeInstances}`);
-
   if (typeof window.initLeafletMapInstance === 'function') {
-    window.initLeafletMapInstance();
+    const createdMap = window.initLeafletMapInstance(mapElement, params);
+    if (createdMap) {
+      mapCreateCount++;
+      console.log('[MAP-LIFECYCLE] instance-created');
+      const activeInstances = window.activeLeafletMap ? 1 : 0;
+      console.log(`[MAP-LIFECYCLE] enterMap: createCount=${mapCreateCount}, destroyCount=${mapDestroyCount}, activeInstanceCount=${activeInstances}, currentScreen=${window.state?.currentScreen}`);
+      console.log(`[MAP-LIFECYCLE] invariant activeInstances=${activeInstances}`);
+      return createdMap;
+    }
   }
+  return null;
 };
 
 window.resolveSiteFromId = function (siteId) {
@@ -1364,7 +1371,9 @@ window.state.verifiedSites = [];
 
 // Global Site Click Interceptor & Listener Initializer
 window.initGlobalSiteClickListeners = function () {
-  console.log("🔗 Initializing Global Site Click Listeners...");
+  if (window.__globalSiteListenerInitialized) return;
+  window.__globalSiteListenerInitialized = true;
+  console.log('[BOOT] globalSiteListener count=1');
 
   // Non-blocking site click listener (capture phase disabled to preserve card handlers & drawer opening)
   window.addEventListener('click', function (e) {
@@ -2006,13 +2015,6 @@ window.forceRenderDirectory = function () {
   }
 };
 
-// Execute immediately on document ready
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', initApp);
-} else {
-  initApp();
-}
-
 // Seed initial ledger data for presentation demo if empty
 if (!state.eventLedger || state.eventLedger.length === 0) {
   state.eventLedger = [
@@ -2204,8 +2206,14 @@ const GEOFENCE_RADIUS_METERS = 500;
 const POLLING_INTERVAL_MS = 120000; // 2 minutes interval polling
 const DRIFT_GRACE_LIMIT_MS = 180000; // 3 minutes structural grace period
 
+window.__appInitialized = false;
+
 function initApp() {
-  console.log("🚀 [YathraLanka] Initializing App Shell...");
+  if (window.__appInitialized) {
+    return;
+  }
+  window.__appInitialized = true;
+  console.log('[BOOT] initApp count=1');
 
   // Safely initialize listeners
   if (typeof window.initGlobalSiteClickListeners === 'function') {
@@ -3112,23 +3120,21 @@ window.executeAppNavigation = function (targetScreen, params = {}) {
       case 'site-details':
         {
           const reqId = params?.id || params?.siteId || window.state?.activeSite?.id || null;
-          console.log(`[SITE-NAV] requestedId=${reqId}`);
+          console.log(`[SITE-RUNTIME 01] tap id=${reqId}`);
 
           // Ensure preview drawer is removed before site detail rendering
           document.querySelectorAll('#site-preview-drawer-backdrop, .site-preview-drawer-backdrop').forEach(el => el.remove());
           if (window.state) window.state.overlay = null;
 
           const resolvedSite = (typeof window.resolveSiteFromId === 'function' ? window.resolveSiteFromId(reqId) : null) || window.state?.activeSite || null;
-          console.log(`[SITE-NAV] resolvedId=${resolvedSite ? resolvedSite.id : null}`);
+          console.log(`[SITE-RUNTIME 02] resolved id=${resolvedSite ? resolvedSite.id : null}`);
 
           if (resolvedSite) {
             window.state.activeSite = resolvedSite;
             window.state.selectedSite = resolvedSite;
-            console.log('[SITE-NAV] detail-render-start');
             htmlContent = typeof renderSiteDetail === 'function' ? renderSiteDetail(resolvedSite) : '<div>Site details loading...</div>';
-            setTimeout(() => { console.log('[SITE-NAV] detail-render-complete'); }, 0);
           } else {
-            console.error(`[SITE-NAV] FAILED to resolve site for requestedId=${reqId}`);
+            console.error(`[SITE-RUNTIME ERROR] stage=resolution name=NotFound message=Failed to resolve site for requestedId=${reqId}`);
             window.state.activeSite = null;
             window.state.selectedSite = null;
             htmlContent = `
@@ -3261,8 +3267,7 @@ window.executeAppNavigation = function (targetScreen, params = {}) {
     viewport.innerHTML = htmlContent;
     viewport.scrollTop = 0;
 
-    // MAP INITIALIZATION ORDER (Step 4 Requirement 2):
-    // e. Call enterMap() after DOM is assigned and #map is connected
+    // MAP INITIALIZATION ORDER:
     if (targetScreen === 'map' || targetScreen === 'wanderer') {
       requestAnimationFrame(() => {
         if (typeof window.enterMap === 'function') {
@@ -3271,15 +3276,38 @@ window.executeAppNavigation = function (targetScreen, params = {}) {
       });
     }
 
-    // AUTH UI VERIFICATION CHECK (Step 4 Requirement 1)
+    // SITE DETAIL POST-MOUNT VERIFICATION:
+    if (targetScreen === 'site-detail' || targetScreen === 'site_preview' || targetScreen === 'site-details') {
+      const siteScreenEl = viewport.querySelector('.site-detail-screen');
+      const isMounted = Boolean(siteScreenEl?.isConnected);
+      const rect = siteScreenEl ? siteScreenEl.getBoundingClientRect() : { width: 0, height: 0 };
+      console.log(`[SITE-RUNTIME 08] mount-success connected=${isMounted} size=${Math.round(rect.width)}x${Math.round(rect.height)}`);
+
+      if (window.state?.activeSite && window.state?.siteLocationVerified === window.state.activeSite.id) {
+        if (typeof window.initBackgroundImmersionTimer === 'function') {
+          try {
+            window.initBackgroundImmersionTimer(window.state.activeSite.id);
+          } catch (timerErr) {
+            console.warn("Immersion timer post-mount warning:", timerErr);
+          }
+        }
+      }
+    }
+
+    // AUTH UI VERIFICATION CHECK
     if (targetScreen === 'auth' || targetScreen === 'login' || targetScreen === 'signup') {
       const outerWrappers = document.querySelectorAll('.auth-screen-container').length;
       const backButtons = document.querySelectorAll('#login-back, #signup-back, #btn-auth-back').length;
       console.log(`[AUTH-UI] outerWrappers=${outerWrappers} backButtons=${backButtons}`);
     }
 
-    // Primary Navigation Screens showing Global Bottom Nav
+    // CONTROLLED ROUTER-OWNED FOOTER RENDERING & VISIBILITY (Part 1 Requirement)
+    if (!window.__footerRenderCount) window.__footerRenderCount = 0;
+    window.__footerRenderCount++;
+
     const primaryNavScreens = ['home', 'dashboard', 'activism', 'rewards', 'profile'];
+    let bodyFooter = document.getElementById('body-direct-global-nav');
+
     if (primaryNavScreens.includes(targetScreen)) {
       let activeTab = 'home';
       if (targetScreen === 'activism') activeTab = 'activism';
@@ -3287,13 +3315,25 @@ window.executeAppNavigation = function (targetScreen, params = {}) {
       else if (targetScreen === 'profile') activeTab = 'profile';
       else activeTab = 'home';
 
-      if (typeof renderGlobalFooter === 'function') {
-        renderGlobalFooter(activeTab);
+      if (!bodyFooter) {
+        bodyFooter = document.createElement('div');
+        bodyFooter.id = 'body-direct-global-nav';
+        document.body.appendChild(bodyFooter);
       }
-    }
+      bodyFooter.innerHTML = typeof renderGlobalFooter === 'function' ? renderGlobalFooter(activeTab) : '';
+      bodyFooter.style.setProperty('display', 'block', 'important');
 
-    if (typeof window.updateGlobalFooterVisibility === 'function') {
-      window.updateGlobalFooterVisibility();
+      console.log(`[FOOTER] renderCount=${window.__footerRenderCount} route=${targetScreen}`);
+      console.log('[FOOTER] visibility=shown');
+      console.log('[FOOTER] observerActive=false');
+    } else {
+      if (bodyFooter) {
+        bodyFooter.style.setProperty('display', 'none', 'important');
+        bodyFooter.innerHTML = '';
+      }
+      console.log(`[FOOTER] renderCount=${window.__footerRenderCount} route=${targetScreen}`);
+      console.log('[FOOTER] visibility=hidden');
+      console.log('[FOOTER] observerActive=false');
     }
 
     if (typeof attachEvents === 'function') {
@@ -3551,9 +3591,7 @@ function renderMapScreen(params = {}) {
           ⛶
         </button>
       </div>
-
-      <!-- Persistent Footer Navigation -->
-      ${typeof renderGlobalFooter === 'function' ? renderGlobalFooter('activism') : ''}
+      ${typeof renderGlobalFooter === 'function' ? renderGlobalFooter('home') : ''}
 
     </div>
   `;
@@ -3562,49 +3600,47 @@ function renderMapScreen(params = {}) {
 }
 
 // --- ROBUST OFFLINE-SAFE LEAFLET MAP WRAPPER ---
-window.initLeafletMapInstance = function () {
-  console.log('[MAP-ACTUAL 06] initializeYathraMap entered');
-  console.log('[MAP-ACTUAL 07] initLeafletMapInstance entered');
-  console.log('[MAP-FREEZE 10] map initialization starts');
+window.initLeafletMapInstance = function (containerEl = null, params = {}) {
+  let stage = 'start';
   try {
-    const mapElement = document.getElementById('map');
-    if (!mapElement) {
-      console.warn('[FREEZE-DEBUG] map initialization failed: #map container element not found');
-      return;
-    }
-    console.log('[MAP-FREEZE 08] map container found:', mapElement.id);
-    const rect = mapElement.getBoundingClientRect();
-    console.log('[MAP-FREEZE 09] map container dimensions:', `offsetWidth=${mapElement.offsetWidth}, offsetHeight=${mapElement.offsetHeight}, rect=${Math.round(rect.width)}x${Math.round(rect.height)}`);
+    const mapElement = containerEl || document.getElementById('map') || document.getElementById('yathra-main-map');
+    stage = 'dom-check';
+    const isConnected = Boolean(mapElement?.isConnected);
+    const rect = mapElement ? mapElement.getBoundingClientRect() : { width: 0, height: 0 };
 
-    // Ensure container has measurable layout dimensions to prevent layout locking loops
+    if (!mapElement || !isConnected) {
+      const err = new Error('#map element not connected to DOM');
+      console.error(`[MAP-RUNTIME ERROR] stage=${stage} name=${err.name} message=${err.message} stack=${err.stack}`);
+      return null;
+    }
+
     mapElement.style.height = '100%';
     mapElement.style.width = '100%';
 
-    // Check if Leaflet (L) is globally available (handles offline / CDN timeout states gracefully)
-    if (typeof L === 'undefined') {
-      console.warn("⚠️ Leaflet library unavailable (offline/network timeout). Rendering safe fallback view.");
+    stage = 'leaflet-check';
+    const leafletAvailable = typeof L !== 'undefined';
+    console.log(`[MAP-RUNTIME 03] leaflet-available=${leafletAvailable}`);
+
+    if (!leafletAvailable) {
+      console.warn("⚠️ Leaflet library unavailable. Rendering fallback view.");
       mapElement.innerHTML = `
         <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; background: #FDF8E9; color: #1E293B; padding: 20px; text-align: center; box-sizing: border-box;">
           <div style="font-size: 36px; margin-bottom: 8px;">🗺️</div>
           <h3 style="font-size: 16px; font-weight: 800; color: #0B5A68; margin-bottom: 6px;">Offline Map Mode</h3>
           <p style="font-size: 12px; color: #64748B; line-height: 1.4; margin-bottom: 16px;">
-            Interactive map tiles require an active network connection. You can still explore all heritage sites via the directory.
+            Interactive map tiles require an active network connection. You can explore all heritage sites via the directory.
           </p>
-          <button onclick="window.navigate('directory')" style="background: #0B5A68; color: #FFFFFF; border: none; border-radius: 10px; padding: 10px 18px; font-weight: 700; font-size: 12.5px; cursor: pointer;">
+          <button onclick="window.executeAppNavigation('directory')" style="background: #0B5A68; color: #FFFFFF; border: none; border-radius: 10px; padding: 10px 18px; font-weight: 700; font-size: 12.5px; cursor: pointer;">
             Go to Directory →
           </button>
         </div>
       `;
-      return;
+      return null;
     }
 
-    console.log('[MAP-FREEZE 11] current map instance exists?:', Boolean(window.activeLeafletMap));
-    // Teardown existing instance cleanly if present
     if (window.activeLeafletMap) {
-      console.log('[MAP-FREEZE 12] old map instance cleanup starting');
       try { window.activeLeafletMap.remove(); } catch (e) { }
       window.activeLeafletMap = null;
-      console.log('[MAP-FREEZE 12] old map instance cleanup finished');
     }
 
     // Inject Pulsing Bulb Keyframes
@@ -3613,39 +3649,23 @@ window.initLeafletMapInstance = function () {
       style.id = 'map-bulb-glow-style';
       style.innerHTML = `
         @keyframes bulbGlowPulse {
-          0% {
-            box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.7), 0 0 8px #2563EB;
-            transform: scale(0.95);
-          }
-          50% {
-            box-shadow: 0 0 0 14px rgba(37, 99, 235, 0), 0 0 22px #60A5FA;
-            transform: scale(1.15);
-          }
-          100% {
-            box-shadow: 0 0 0 0 rgba(37, 99, 235, 0), 0 0 8px #2563EB;
-            transform: scale(0.95);
-          }
+          0% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.7), 0 0 8px #2563EB; transform: scale(0.95); }
+          50% { box-shadow: 0 0 0 14px rgba(37, 99, 235, 0), 0 0 22px #60A5FA; transform: scale(1.15); }
+          100% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0), 0 0 8px #2563EB; transform: scale(0.95); }
         }
         .live-user-glowing-bulb {
-          width: 16px;
-          height: 16px;
-          background: #2563EB;
-          border: 2.5px solid #FFFFFF;
-          border-radius: 50%;
+          width: 16px; height: 16px; background: #2563EB; border: 2.5px solid #FFFFFF; border-radius: 50%;
           animation: bulbGlowPulse 1.8s infinite ease-in-out;
         }
       `;
       document.head.appendChild(style);
     }
 
-    const sriLankaBounds = [
-      [5.85, 79.50],
-      [9.85, 81.90]
-    ];
+    const sriLankaBounds = [[5.85, 79.50], [9.85, 81.90]];
 
-    console.log('[MAP-ACTUAL 08] L.map call starting');
-    console.log('[MAP-FREEZE 13] Leaflet constructor called');
-    const map = L.map('map', {
+    stage = 'constructor';
+    console.log('[MAP-RUNTIME 04] constructor-start');
+    const map = L.map(mapElement, {
       zoomControl: false,
       attributionControl: false,
       maxBounds: [[5.0, 78.5], [10.5, 83.0]],
@@ -3654,8 +3674,7 @@ window.initLeafletMapInstance = function () {
 
     map.fitBounds(sriLankaBounds, { padding: [10, 10] });
     window.activeLeafletMap = map;
-    console.log('[MAP-ACTUAL 09] L.map call returned');
-    console.log('[MAP-FREEZE 14] Leaflet constructor returns');
+    console.log('[MAP-RUNTIME 05] constructor-success');
 
     window.resetMapToFrame = function () {
       if (window.activeLeafletMap) {
@@ -3663,27 +3682,21 @@ window.initLeafletMapInstance = function () {
       }
     };
 
-    // Add OpenStreetMap tile layer wrapped with offline error handling tile load listeners
+    stage = 'tiles';
     const tileLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 18,
-      errorTileUrl: '' // Prevents infinite broken image icon loops when offline
+      errorTileUrl: ''
     });
 
     tileLayer.on('tileerror', function(errorEvent) {
-      console.warn("⚠️ Tile load network timeout or offline state detected for tile:", errorEvent);
+      console.warn("⚠️ Tile load timeout or offline:", errorEvent);
     });
 
     tileLayer.addTo(map);
-    console.log('[MAP-FREEZE 15] tile/native map listeners attached');
+    console.log('[MAP-RUNTIME 06] tiles-added');
 
-    // Map click (panning/zooming/tapping background) - no auth gate for basic access
-    map.on('click', function (e) {
-      // Map tapping does not trigger auth gates for guest users
-    });
-
-    console.log('[MAP-ACTUAL 10] markers starting');
-    console.log('[MAP-FREEZE 18] markers begin');
-    // Detect and visually offset near-identical pins at low zoom levels
+    stage = 'markers';
+    let markerCount = 0;
     try {
       const processedCoords = [];
       const allSites = typeof getDirectoryDataset === 'function' ? getDirectoryDataset() : [];
@@ -3716,6 +3729,8 @@ window.initLeafletMapInstance = function () {
         });
 
         const marker = L.marker([coords.lat, coords.lng], { icon, zIndexOffset: 2000 }).addTo(map);
+        markerCount++;
+
         if (typeof window.getShortSiteName === 'function') {
           marker.bindTooltip(window.getShortSiteName(site), { permanent: true, direction: 'top', className: 'map-site-label' });
         }
@@ -3729,15 +3744,11 @@ window.initLeafletMapInstance = function () {
     } catch (pinErr) {
       console.warn("Non-critical pin error:", pinErr);
     }
-    console.log('[MAP-ACTUAL 11] markers completed');
-    console.log('[MAP-FREEZE 19] markers finish');
+    console.log(`[MAP-RUNTIME 07] markers-added count=${markerCount}`);
 
-    // Plot live GPS position with glowing bulb
     if (navigator.geolocation) {
-      console.log('[MAP-FREEZE 16] geolocation starts');
       navigator.geolocation.getCurrentPosition(
         (pos) => {
-          console.log('[MAP-FREEZE 17] geolocation resolves');
           const userIcon = L.divIcon({
             className: 'user-pin-wrapper',
             html: `<div class="live-user-glowing-bulb"></div>`,
@@ -3746,9 +3757,7 @@ window.initLeafletMapInstance = function () {
           });
           L.marker([pos.coords.latitude, pos.coords.longitude], { icon: userIcon, zIndexOffset: 100, interactive: false }).addTo(map).bindPopup("<b>You Are Here</b>");
         },
-        (geoErr) => {
-          console.log('[MAP-FREEZE 17] geolocation rejects/fails:', geoErr?.message);
-        },
+        (geoErr) => {},
         { enableHighAccuracy: true, timeout: 5000 }
       );
     }
@@ -3758,21 +3767,26 @@ window.initLeafletMapInstance = function () {
         map.invalidateSize();
       }
     }, 150);
-    console.log('[MAP-ACTUAL 12] map init returned');
-    console.log('[MAP-FREEZE 20] post-map-render completes');
 
+    stage = 'complete';
+    console.log('[MAP-RUNTIME 08] initialization-complete');
+    return map;
   } catch (mapErr) {
-    console.error("Critical map wrapper exception caught safely:", mapErr);
-    const mapElement = document.getElementById('map');
+    console.error(`[MAP-RUNTIME ERROR] stage=${stage} name=${mapErr?.name || 'Error'} message=${mapErr?.message || mapErr} stack=${mapErr?.stack || ''}`);
+    const mapElement = containerEl || document.getElementById('map');
     if (mapElement) {
       mapElement.innerHTML = `
-        <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; background: #FDF8E9; color: #1E293B; padding: 20px; text-align: center;">
-          <h3 style="font-size: 15px; font-weight: 800; color: #0B5A68; margin-bottom: 6px;">Map Loading Notice</h3>
-          <p style="font-size: 11.5px; color: #64748B; margin-bottom: 14px;">Unable to initialize map view. Please check your network connection.</p>
-          <button onclick="window.navigate('home')" style="background: #0B5A68; color: #FFF; border: none; border-radius: 8px; padding: 8px 14px; font-weight: 700; cursor: pointer;">Return Home</button>
+        <div style="padding: 24px; text-align: center; color: #1E293B; background: #FAF5E8; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; box-sizing: border-box;">
+          <div style="font-size: 38px; margin-bottom: 8px;">🗺️</div>
+          <h3 style="font-size: 18px; font-weight: 800; color: #0B5A68; margin-bottom: 6px;">Map Display Error</h3>
+          <p style="font-size: 12.5px; color: #64748B; margin-bottom: 18px; line-height: 1.45;">Failed to initialize map instance.</p>
+          <button onclick="window.executeAppNavigation('directory')" style="background: #0B5A68; color: #FFFFFF; border: none; border-radius: 11px; padding: 11px 20px; font-weight: 800; font-size: 13px; cursor: pointer; box-shadow: 0 4px 12px rgba(11,90,104,0.3);">
+            Back to Directory →
+          </button>
         </div>
       `;
     }
+    return null;
   }
 };
 window.initLeafletMap = window.initLeafletMapInstance;
@@ -4029,7 +4043,13 @@ function handleAuthUserSuccess(user, toastMsg) {
   });
 }
 
+window.__authListenerInitialized = false;
+
 function initAuthListener() {
+  if (window.__authListenerInitialized) return;
+  window.__authListenerInitialized = true;
+  console.log('[BOOT] authListener count=1');
+
   if (typeof auth === 'undefined' || !auth) return;
 
   getRedirectResult(auth).then((result) => {
@@ -4094,9 +4114,16 @@ function requireAuth(actionType, callback, siteId = null, payload = null) {
 // ============================================================================
 // ONE-TAP DIRECT GOOGLE AUTHENTICATION & ACCOUNT SELECTOR PROMPT
 // ============================================================================
+// ============================================================================
+// ONE-TAP DIRECT GOOGLE AUTHENTICATION & ACCOUNT SELECTOR PROMPT
+// ============================================================================
 window.handleGoogleSignInClick = async function () {
-  console.log("[AUTH-GOOGLE 01] tap");
-  console.log("[AUTH-GOOGLE] currentUser before:", auth?.currentUser ? auth.currentUser.uid : "null");
+  if (!window.__authAttemptCount) window.__authAttemptCount = 0;
+  window.__authAttemptCount++;
+  console.log(`[AUTH-RUNTIME 01] tap attempt=${window.__authAttemptCount}`);
+
+  const preUid = auth?.currentUser?.uid || null;
+  console.log(`[AUTH-RUNTIME 02] preclear firebaseUid=${preUid || 'null'}`);
 
   if (!window.state) window.state = {};
   window.state.isAuthenticating = true;
@@ -4115,35 +4142,60 @@ window.handleGoogleSignInClick = async function () {
   };
 
   try {
+    // 1. Native Plugin SignOut Pre-Clear
+    if (typeof GoogleAuth !== 'undefined' && typeof GoogleAuth.signOut === 'function') {
+      try {
+        await GoogleAuth.signOut();
+        console.log('[AUTH-RUNTIME 03] native-signout-complete');
+      } catch (soErr) {
+        console.log(`[AUTH-RUNTIME 03] native-signout-complete (notice: ${soErr?.message || soErr})`);
+      }
+    } else {
+      console.log('[AUTH-RUNTIME 03] native-signout-complete (plugin unavailable)');
+    }
+
+    // 2. Firebase SignOut Pre-Clear
+    if (auth && typeof signOut === 'function') {
+      try {
+        await signOut(auth);
+        console.log('[AUTH-RUNTIME 04] firebase-signout-complete');
+      } catch (fbSoErr) {
+        console.log(`[AUTH-RUNTIME 04] firebase-signout-complete (notice: ${fbSoErr?.message || fbSoErr})`);
+      }
+    } else {
+      console.log('[AUTH-RUNTIME 04] firebase-signout-complete (auth uninitialized)');
+    }
+
+    // 3. Clear Session Keys & Memory State
+    localStorage.removeItem('yathralanka_logged_in');
+    localStorage.removeItem('yathralanka_current_user');
+    localStorage.removeItem('yathralanka_active_user');
+    window.state.user = null;
+    window.state.currentUser = null;
+    window.state.isLoggedIn = false;
+    window.state.isGuest = true;
+
     const isNative = Boolean(window.Capacitor?.isNativePlatform && window.Capacitor.isNativePlatform());
-    console.log(`[AUTH-GOOGLE 02] platform chosen: ${isNative ? 'native' : 'web'}`);
 
     if (isNative) {
       if (typeof GoogleAuth !== 'undefined' && typeof GoogleAuth.initialize === 'function') {
-        console.log("[AUTH-GOOGLE 03] Google provider initialized (GoogleAuth.initialize)");
-        await GoogleAuth.initialize({
-          clientId: '1032179534120-ttht7fjohqbvdrjurvjnudnr9ebggfp8.apps.googleusercontent.com',
-          scopes: ['profile', 'email'],
-          grantOfflineAccess: false
-        });
-      } else {
-        console.warn("[AUTH-GOOGLE WARNING] GoogleAuth object or initialize method unavailable");
+        try {
+          await GoogleAuth.initialize({
+            clientId: '1032179534120-ttht7fjohqbvdrjurvjnudnr9ebggfp8.apps.googleusercontent.com',
+            scopes: ['profile', 'email'],
+            grantOfflineAccess: false
+          });
+        } catch (initErr) {
+          console.warn("Notice: GoogleAuth.initialize warning:", initErr);
+        }
       }
 
+      console.log('[AUTH-RUNTIME 05] native-selector-start');
       let googleUser = null;
       try {
         googleUser = await GoogleAuth.signIn();
       } catch (signInErr) {
-        console.error("[AUTH-GOOGLE ERROR] GoogleAuth.signIn rejected:", signInErr);
-        cleanup();
-        if (typeof window.showNotification === 'function') {
-          window.showNotification("Google Sign-In cancelled or unavailable.", "info");
-        }
-        return; // GUARD: STAY ON SIGN IN SCREEN
-      }
-
-      if (!googleUser) {
-        console.error("[AUTH-GOOGLE ERROR] googleUser is null/undefined after sign-in");
+        console.log(`[AUTH-RUNTIME CANCELLED] GoogleAuth.signIn rejected: ${signInErr?.message || signInErr}`);
         cleanup();
         if (typeof window.showNotification === 'function') {
           window.showNotification("Google Sign-In cancelled.", "info");
@@ -4151,11 +4203,22 @@ window.handleGoogleSignInClick = async function () {
         return; // GUARD: STAY ON SIGN IN SCREEN
       }
 
+      if (!googleUser) {
+        console.log('[AUTH-RUNTIME CANCELLED] GoogleAuth.signIn returned null');
+        cleanup();
+        return;
+      }
+
+      const email = googleUser.email || googleUser.user?.email || '';
+      const maskedEmail = email ? email.replace(/^(.{1,2}).*(@.*)$/, '$1***$2') : 'masked';
+      console.log(`[AUTH-RUNTIME 06] native-selector-returned account=${maskedEmail}`);
+
       const idToken = googleUser.authentication?.idToken || googleUser.idToken;
-      console.log(`[AUTH-GOOGLE 04] token received: idTokenPresent=${Boolean(idToken)}`);
+      const idTokenPresent = Boolean(idToken);
+      console.log(`[AUTH-RUNTIME 07] idTokenPresent=${idTokenPresent}`);
 
       if (!idToken) {
-        console.error("[AUTH-GOOGLE ERROR] No ID token returned from Google Auth bridge");
+        console.log('[AUTH-RUNTIME ERROR] stage=native-token code=missing_token message=No ID token returned');
         cleanup();
         if (typeof window.showNotification === 'function') {
           window.showNotification("Google Sign-In failed: No security token returned.", "error");
@@ -4163,15 +4226,14 @@ window.handleGoogleSignInClick = async function () {
         return; // GUARD: STAY ON SIGN IN SCREEN
       }
 
-      console.log("[AUTH-GOOGLE 05] Firebase credential created");
+      console.log('[AUTH-RUNTIME 08] firebase-credential-start');
       const credential = GoogleAuthProvider.credential(idToken);
 
-      console.log("[AUTH-GOOGLE 06] signInWithCredential called");
       let credentialResult = null;
       try {
         credentialResult = await signInWithCredential(auth, credential);
       } catch (fbErr) {
-        console.error("[AUTH-GOOGLE ERROR] Firebase signInWithCredential failed:", fbErr);
+        console.log(`[AUTH-RUNTIME ERROR] stage=firebase-credential code=${fbErr.code || 'error'} message=${fbErr.message}`);
         cleanup();
         if (typeof window.showNotification === 'function') {
           window.showNotification("Firebase authentication failed: " + fbErr.message, "error");
@@ -4180,38 +4242,41 @@ window.handleGoogleSignInClick = async function () {
       }
 
       const fbUser = auth?.currentUser || credentialResult?.user;
-      console.log(`[AUTH-GOOGLE 07] Firebase user returned: userUid=${fbUser?.uid || 'null'}`);
-
       if (!fbUser || !fbUser.uid) {
-        console.error("[AUTH-GOOGLE GUARD PREVENTED ROUTING] Firebase currentUser is null after credential exchange");
+        console.log('[AUTH-RUNTIME ERROR] stage=user-confirmation code=null_user message=Firebase user null after credential exchange');
         cleanup();
-        if (typeof window.showNotification === 'function') {
-          window.showNotification("Firebase user session could not be established.", "error");
-        }
-        return; // GUARD: STAY ON SIGN IN SCREEN
+        return;
       }
+
+      console.log(`[AUTH-RUNTIME 09] firebase-credential-success uid=${fbUser.uid}`);
+      const confirmed = Boolean(auth?.currentUser && auth.currentUser.uid === fbUser.uid);
+      console.log(`[AUTH-RUNTIME 10] auth-current-user-confirmed=${confirmed}`);
+
+      if (!confirmed) {
+        console.log('[AUTH-RUNTIME ERROR] stage=user-confirmation code=mismatch message=currentUser UID mismatch');
+        cleanup();
+        return;
+      }
+
+      console.log('[AUTH-RUNTIME 11] navigation-authorized');
 
       const userSession = {
         uid: fbUser.uid,
         name: googleUser.name || googleUser.givenName || googleUser.displayName || fbUser.displayName || 'Explorer',
-        email: (googleUser.email || fbUser.email || '').toLowerCase().trim(),
+        email: email.toLowerCase().trim(),
         authProvider: 'google',
         isGuest: false,
         emailVerified: true,
         xp: 50
       };
 
-      if (typeof window.handleGoogleSignInSuccess === 'function') {
-        window.handleGoogleSignInSuccess(userSession);
-      } else {
-        localStorage.setItem('yathralanka_current_user', JSON.stringify(userSession));
-        window.state.user = userSession;
-        window.state.currentUser = userSession;
-        window.state.isGuest = false;
-        window.state.isLoggedIn = true;
-      }
+      localStorage.setItem('yathralanka_current_user', JSON.stringify(userSession));
+      localStorage.setItem('yathralanka_logged_in', 'true');
+      window.state.user = userSession;
+      window.state.currentUser = userSession;
+      window.state.isGuest = false;
+      window.state.isLoggedIn = true;
 
-      console.log("[AUTH-GOOGLE 08] router to home");
       cleanup();
       if (typeof window.executeAppNavigation === 'function') {
         window.executeAppNavigation('home');
@@ -4219,56 +4284,51 @@ window.handleGoogleSignInClick = async function () {
       return;
     } else {
       // WEB PLATFORM FLOW
-      console.log("[AUTH-GOOGLE 03] Google provider initialized (GoogleAuthProvider)");
+      console.log('[AUTH-RUNTIME 05] web-selector-start');
       const provider = new GoogleAuthProvider();
       provider.setCustomParameters({ prompt: 'select_account' });
 
-      console.log("[AUTH-GOOGLE 06] web signInWithPopup called");
       let result = null;
       try {
         result = await signInWithPopup(auth, provider);
       } catch (popupErr) {
-        console.error("[AUTH-GOOGLE ERROR] web signInWithPopup failed:", popupErr);
+        console.log(`[AUTH-RUNTIME CANCELLED] Web signInWithPopup rejected: ${popupErr?.message || popupErr}`);
         cleanup();
-        if (typeof window.showNotification === 'function') {
-          window.showNotification("Google Sign-In popup cancelled or blocked.", "info");
-        }
-        return; // GUARD: STAY ON SIGN IN SCREEN
+        return;
       }
 
       const fbUser = result?.user || auth?.currentUser;
-      console.log(`[AUTH-GOOGLE 07] Firebase user returned: userUid=${fbUser?.uid || 'null'}`);
-
       if (!fbUser || !fbUser.uid) {
-        console.error("[AUTH-GOOGLE GUARD PREVENTED ROUTING] Web Google Sign-In returned no valid Firebase user");
+        console.log('[AUTH-RUNTIME ERROR] stage=web-user-confirmation code=null_user message=Web Google Sign-In returned no valid Firebase user');
         cleanup();
-        if (typeof window.showNotification === 'function') {
-          window.showNotification("Google Sign-In failed.", "error");
-        }
-        return; // GUARD: STAY ON SIGN IN SCREEN
+        return;
       }
+
+      const email = fbUser.email || '';
+      const maskedEmail = email ? email.replace(/^(.{1,2}).*(@.*)$/, '$1***$2') : 'masked';
+      console.log(`[AUTH-RUNTIME 06] web-selector-returned account=${maskedEmail}`);
+      console.log('[AUTH-RUNTIME 07] idTokenPresent=true');
+      console.log(`[AUTH-RUNTIME 09] firebase-credential-success uid=${fbUser.uid}`);
+      console.log('[AUTH-RUNTIME 10] auth-current-user-confirmed=true');
+      console.log('[AUTH-RUNTIME 11] navigation-authorized');
 
       const userSession = {
         uid: fbUser.uid,
         name: fbUser.displayName || 'Explorer',
-        email: (fbUser.email || '').toLowerCase().trim(),
+        email: email.toLowerCase().trim(),
         authProvider: 'google',
         isGuest: false,
         emailVerified: true,
         xp: 50
       };
 
-      if (typeof window.handleGoogleSignInSuccess === 'function') {
-        window.handleGoogleSignInSuccess(userSession);
-      } else {
-        localStorage.setItem('yathralanka_current_user', JSON.stringify(userSession));
-        window.state.user = userSession;
-        window.state.currentUser = userSession;
-        window.state.isGuest = false;
-        window.state.isLoggedIn = true;
-      }
+      localStorage.setItem('yathralanka_current_user', JSON.stringify(userSession));
+      localStorage.setItem('yathralanka_logged_in', 'true');
+      window.state.user = userSession;
+      window.state.currentUser = userSession;
+      window.state.isGuest = false;
+      window.state.isLoggedIn = true;
 
-      console.log("[AUTH-GOOGLE 08] router to home");
       cleanup();
       if (typeof window.executeAppNavigation === 'function') {
         window.executeAppNavigation('home');
@@ -4276,11 +4336,8 @@ window.handleGoogleSignInClick = async function () {
       return;
     }
   } catch (error) {
-    console.error("[AUTH-GOOGLE ERROR] Unhandled Google authentication error caught:", error);
+    console.log(`[AUTH-RUNTIME ERROR] stage=unhandled code=exception message=${error?.message || error}`);
     cleanup();
-    if (typeof window.showNotification === 'function') {
-      window.showNotification("Google Sign-In unavailable.", "error");
-    }
   } finally {
     cleanup();
   }
@@ -7370,179 +7427,194 @@ window.initBackgroundImmersionTimer = function (siteId) {
 };
 
 function renderSiteDetail(site = window.state?.activeSite) {
-  if (!site) {
-    const pool = window.sitesData || [];
-    site = pool[0] || {};
-  }
-  console.log('[DETAIL-TRACE 08] site object resolved:', site?.id || site?.name);
-
-  const siteName = site.name || 'Heritage Checkpoint';
-  const siteCategory = site.category || 'Historical Sanctuary';
-  const siteLocation = site.district || site.location || 'Sri Lanka';
-  const siteDescription = site.description || 'Historical archaeological landmark and cultural heritage sanctuary.';
-  const activeTab = window.state?.siteDetailTab || 'overview';
-
-  const userLat = (window.userCoordinates && window.userCoordinates.latitude) ? window.userCoordinates.latitude : (window.state?.userCoordinates?.latitude || 6.9271);
-  const userLng = (window.userCoordinates && window.userCoordinates.longitude) ? window.userCoordinates.longitude : (window.state?.userCoordinates?.longitude || 79.8612);
-  const siteLat = site.latitude || 6.9271;
-  const siteLng = site.longitude || 79.8612;
-  const distMeters = typeof calculateHaversineDistanceMeters === 'function' ? calculateHaversineDistanceMeters(userLat, userLng, siteLat, siteLng) : 0;
-  const isProximityLocked = distMeters > 500 && (!window.state?.demoOverride || !window.state.demoOverride.active);
-
-  // Auto-verify location presence on site detail open ONLY if within 500m proximity boundary
-  if (!isProximityLocked) {
-    window.state.siteLocationVerified = site.id;
-    setTimeout(() => {
-      window.initBackgroundImmersionTimer(site.id);
-    }, 50);
-  }
-
-  const quizLock = window.getQuizLockStatus();
-
-  return `
-    <div class="screen site-detail-screen" style="position: relative; height: 100%; display: flex; flex-direction: column; overflow: hidden; background: #F8F7F2;">
-      
-      <!-- Top Bar -->
-      <div style="padding: 14px 16px; display: flex; align-items: center; justify-content: space-between; background: #FFFFFF; border-bottom: 1px solid #E2E8F0; z-index: 10;">
-        ${window.renderUniversalBackButton('directory', '← Return to Directory')}
-        <h2 style="font-size: 15px; font-weight: 800; color: #125463; margin: 0; text-align: center; flex: 1; padding: 0 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-          ${siteName}
-        </h2>
-        <span style="font-size: 11px; font-weight: 800; color: #0C6C7A; background: rgba(12,108,122,0.1); padding: 4px 10px; border-radius: 8px;">
-          220 XP
-        </span>
-      </div>
-
-      <!-- Tab Navigation Switcher Bar -->
-      <div style="padding: 8px 16px; background: #F1F5F9; border-bottom: 1px solid #E2E8F0; display: flex; justify-content: center; z-index: 10;">
-        <div style="background: #CBD5E1; border-radius: 12px; padding: 3px; display: flex; width: 100%; max-width: 380px; gap: 4px;">
-          <button 
-            id="site-tab-btn-overview"
-            type="button"
-            onclick="window.switchSiteDetailTab('overview')"
-            style="flex: 1; padding: 8px 12px; border-radius: 9px; border: none; font-size: 12.5px; cursor: pointer; transition: all 0.2s ease; ${activeTab === 'overview' ? 'background: #FFFFFF; color: #0B5A68; font-weight: 800; box-shadow: 0 2px 6px rgba(0,0,0,0.06);' : 'background: transparent; color: #64748B; font-weight: 700;'}"
-          >
-            Overview & Quiz
-          </button>
-          <button 
-            id="site-tab-btn-verification"
-            type="button"
-            onclick="window.switchSiteDetailTab('verification')"
-            style="flex: 1; padding: 8px 12px; border-radius: 9px; border: none; font-size: 12.5px; cursor: pointer; transition: all 0.2s ease; ${activeTab === 'verification' ? 'background: #FFFFFF; color: #0B5A68; font-weight: 800; box-shadow: 0 2px 6px rgba(0,0,0,0.06);' : 'background: transparent; color: #64748B; font-weight: 700;'}"
-          >
-            Verification & Checkpoints
-          </button>
-        </div>
-      </div>
-
-      <!-- Content Panels Area -->
-      <div style="flex: 1; overflow-y: auto; padding: 14px 16px 85px 16px; box-sizing: border-box;">
-        
-        <!-- TAB 1: OVERVIEW & QUIZ (Banner Image Removed to Free Up Vertical Space) -->
-        <div id="site-tab-panel-overview" style="display: ${activeTab === 'overview' ? 'block' : 'none'};">
-          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
-            <h1 style="font-size: 20px; font-weight: 800; color: #1E293B; margin: 0;">${siteName}</h1>
-            <span style="background: rgba(18,84,99,0.1); color: #0B5A68; font-size: 10.5px; font-weight: 800; padding: 4px 10px; border-radius: 10px;">${siteCategory}</span>
-          </div>
-          <p style="font-size: 12px; color: #64748B; font-weight: 600; margin: 0 0 12px 0;">📍 ${siteLocation}</p>
-
-          <!-- Historical Sanctuary Overview -->
-          <div style="background: #FFFFFF; border-radius: 16px; padding: 14px; margin-bottom: 12px; border: 1px solid #E2E8F0; box-shadow: 0 2px 8px rgba(0,0,0,0.03);">
-            <h3 style="font-size: 13px; font-weight: 800; color: #125463; margin: 0 0 6px 0;">Historical Sanctuary Overview</h3>
-            <p style="font-size: 12px; color: #475569; line-height: 1.5; margin: 0;">${siteDescription}</p>
-          </div>
-
-          <!-- Knowledge Quiz Button -->
-          <button 
-            onclick="window.handleQuizButtonClick('${site.id}')" 
-            style="width: 100%; background: #FFFFFF; border: 1.5px solid ${quizLock.isLocked ? '#FCA5A5' : '#CBD5E1'}; border-radius: 14px; padding: 14px; display: flex; align-items: center; justify-content: space-between; cursor: pointer;">
-            <div style="display: flex; align-items: center; gap: 10px;">
-              <span style="font-size: 22px;">🧠</span>
-              <div style="text-align: left;">
-                <div style="font-size: 13.5px; font-weight: 800; color: #125463;">Knowledge Quiz</div>
-                <div style="font-size: 11px; color: #64748B;">Test your archaeological knowledge</div>
-              </div>
-            </div>
-            ${quizLock.isLocked
-      ? `<span style="font-size: 10.5px; font-weight: 700; color: #DC2626; background: #FEF2F2; padding: 4px 8px; border-radius: 6px;">Locked (${quizLock.remainingMinutes}m)</span>`
-      : `<span style="font-size: 12px; font-weight: 800; color: #0C6C7A;">Start →</span>`
+  let stage = 'start';
+  try {
+    if (!site) {
+      const pool = window.sitesData || [];
+      site = pool[0] || {};
     }
-          </button>
+    console.log('[SITE-RUNTIME 03] template-start siteId=', site?.id || site?.name);
+
+    const siteName = site.name || 'Heritage Checkpoint';
+    const siteCategory = site.category || 'Historical Sanctuary';
+    const siteLocation = site.district || site.location || 'Sri Lanka';
+    const siteDescription = site.description || 'Historical archaeological landmark and cultural heritage sanctuary.';
+    const activeTab = window.state?.siteDetailTab || 'overview';
+
+    stage = 'distance-calc';
+    console.log('[SITE-RUNTIME 04] distance-calc-start');
+    const userLat = (window.userCoordinates && window.userCoordinates.latitude) ? window.userCoordinates.latitude : (window.state?.userCoordinates?.latitude || 6.9271);
+    const userLng = (window.userCoordinates && window.userCoordinates.longitude) ? window.userCoordinates.longitude : (window.state?.userCoordinates?.longitude || 79.8612);
+    const siteLat = site.latitude || 6.9271;
+    const siteLng = site.longitude || 79.8612;
+    const distMeters = typeof calculateHaversineDistanceMeters === 'function' ? calculateHaversineDistanceMeters(userLat, userLng, siteLat, siteLng) : 0;
+    console.log('[SITE-RUNTIME 05] distance-calc-complete distMeters=', distMeters);
+
+    const isProximityLocked = distMeters > 500 && (!window.state?.demoOverride || !window.state.demoOverride.active);
+
+    if (!isProximityLocked) {
+      window.state.siteLocationVerified = site.id;
+    }
+
+    stage = 'quiz-status';
+    console.log('[SITE-RUNTIME 06] quiz-lock-check-start');
+    const quizLock = (typeof window.getQuizLockStatus === 'function') ? window.getQuizLockStatus() : { isLocked: false, remainingMinutes: 0 };
+    console.log('[SITE-RUNTIME 07] quiz-lock-check-complete locked=', quizLock.isLocked);
+
+    return `
+      <div class="screen site-detail-screen" style="position: relative; height: 100%; display: flex; flex-direction: column; overflow: hidden; background: #F8F7F2;">
+        
+        <!-- Top Bar -->
+        <div style="padding: 14px 16px; display: flex; align-items: center; justify-content: space-between; background: #FFFFFF; border-bottom: 1px solid #E2E8F0; z-index: 10;">
+          ${window.renderUniversalBackButton('directory', '← Return to Directory')}
+          <h2 style="font-size: 15px; font-weight: 800; color: #125463; margin: 0; text-align: center; flex: 1; padding: 0 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+            ${siteName}
+          </h2>
+          <span style="font-size: 11px; font-weight: 800; color: #0C6C7A; background: rgba(12,108,122,0.1); padding: 4px 10px; border-radius: 8px;">
+            220 XP
+          </span>
         </div>
 
-        <!-- TAB 2: VERIFICATION & CHECKPOINTS -->
-        <div id="site-tab-panel-verification" style="display: ${activeTab === 'verification' ? 'block' : 'none'};">
-          <div style="margin-bottom: 12px;">
-            <h3 style="font-size: 15px; font-weight: 800; color: #125463; margin: 0 0 4px 0;">Landmark Verification</h3>
-            <p style="font-size: 11.5px; color: #64748B; margin: 0;">Confirm your presence and frame architectural checkpoints to claim XP rewards.</p>
-          </div>
-
-          <!-- Active On-Site Status Badge -->
-          ${isProximityLocked ? `
-            <div style="background: #FFFBEB; border: 1.5px solid #F59E0B; border-radius: 16px; padding: 14px; margin-bottom: 14px;">
-              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
-                <span style="font-size: 13px; font-weight: 800; color: #B45309; display: flex; align-items: center; gap: 6px;">
-                  🔒 Verification & Immersion Locked
-                </span>
-                <span style="background: #FEF3C7; color: #92400E; font-size: 11px; font-weight: 800; padding: 4px 10px; border-radius: 12px;">
-                  Outside 500m Radius
-                </span>
-              </div>
-              <p style="font-size: 11.5px; color: #92400E; margin: 2px 0 0 0; line-height: 1.4; font-weight: 500;">
-                You are currently <strong>${distMeters >= 1000 ? (distMeters / 1000).toFixed(1) + ' km' : Math.round(distMeters) + ' meters'}</strong> away from ${siteName}. Please move within 500m of this landmark to unlock photo verification & dwell timers.
-              </p>
-            </div>
-          ` : `
-            <div style="background: #ECFDF5; border: 1.5px solid #10B981; border-radius: 16px; padding: 14px; margin-bottom: 14px; box-shadow: 0 2px 10px rgba(16,185,129,0.08);">
-              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
-                <span style="font-size: 13px; font-weight: 800; color: #047857; display: flex; align-items: center; gap: 6px;">
-                  <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #10B981;"></span>
-                  Location Confirmed
-                </span>
-                <span style="background: #0B5A68; color: #EBB34D; font-size: 11px; font-weight: 800; padding: 4px 10px; border-radius: 12px;">
-                  📍 On-Site Verified
-                </span>
-              </div>
-              <p id="immersion-timer-status" style="font-size: 11.5px; color: #065F46; margin: 2px 0 0 0; line-height: 1.4; font-weight: 500;">
-                Location presence confirmed. Select an image option below to complete verification.
-              </p>
-            </div>
-          `}
-
-          <!-- Clean 3-Option Landmark Photo Verification Interface -->
-          <div style="background: #FFFFFF; border-radius: 16px; padding: 16px; border: 1px solid #E2E8F0; box-shadow: 0 2px 8px rgba(11,90,104,0.04);">
-            <h4 style="font-size: 13px; font-weight: 800; color: #0B5A68; margin: 0 0 10px 0;">Checkpoint Photo Options</h4>
-            <div style="display: flex; flex-direction: column; gap: 10px;">
-              <button 
-                onclick="${isProximityLocked ? `window.showProximityGateModal(window.state.activeSite, ${distMeters})` : `window.openTargetFramingView('${site.id}', 1)`}" 
-                style="width: 100%; background: ${isProximityLocked ? '#94A3B8' : '#0B5A68'}; color: #FFFFFF; border: none; padding: 14px 18px; border-radius: 12px; font-weight: 800; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 2px 6px rgba(11,90,104,0.15); opacity: ${isProximityLocked ? '0.85' : '1'};">
-                <span>Image Option 1 ${isProximityLocked ? '(Locked)' : ''}</span>
-                <span style="font-size: 12.5px; color: ${isProximityLocked ? '#FFF' : '#EBB34D'}; font-weight: 800;">${isProximityLocked ? '🔒 Proximity Required' : 'Frame & Match →'}</span>
-              </button>
-
-              <button 
-                onclick="${isProximityLocked ? `window.showProximityGateModal(window.state.activeSite, ${distMeters})` : `window.openTargetFramingView('${site.id}', 2)`}" 
-                style="width: 100%; background: ${isProximityLocked ? '#94A3B8' : '#0B5A68'}; color: #FFFFFF; border: none; padding: 14px 18px; border-radius: 12px; font-weight: 800; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 2px 6px rgba(11,90,104,0.15); opacity: ${isProximityLocked ? '0.85' : '1'};">
-                <span>Image Option 2 ${isProximityLocked ? '(Locked)' : ''}</span>
-                <span style="font-size: 12.5px; color: ${isProximityLocked ? '#FFF' : '#EBB34D'}; font-weight: 800;">${isProximityLocked ? '🔒 Proximity Required' : 'Frame & Match →'}</span>
-              </button>
-
-              <button 
-                onclick="${isProximityLocked ? `window.showProximityGateModal(window.state.activeSite, ${distMeters})` : `window.openTargetFramingView('${site.id}', 3)`}" 
-                style="width: 100%; background: ${isProximityLocked ? '#94A3B8' : '#0B5A68'}; color: #FFFFFF; border: none; padding: 14px 18px; border-radius: 12px; font-weight: 800; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 2px 6px rgba(11,90,104,0.15); opacity: ${isProximityLocked ? '0.85' : '1'};">
-                <span>Image Option 3 ${isProximityLocked ? '(Locked)' : ''}</span>
-                <span style="font-size: 12.5px; color: ${isProximityLocked ? '#FFF' : '#EBB34D'}; font-weight: 800;">${isProximityLocked ? '🔒 Proximity Required' : 'Frame & Match →'}</span>
-              </button>
-            </div>
+        <!-- Tab Navigation Switcher Bar -->
+        <div style="padding: 8px 16px; background: #F1F5F9; border-bottom: 1px solid #E2E8F0; display: flex; justify-content: center; z-index: 10;">
+          <div style="background: #CBD5E1; border-radius: 12px; padding: 3px; display: flex; width: 100%; max-width: 380px; gap: 4px;">
+            <button 
+              id="site-tab-btn-overview"
+              type="button"
+              onclick="window.switchSiteDetailTab('overview')"
+              style="flex: 1; padding: 8px 12px; border-radius: 9px; border: none; font-size: 12.5px; cursor: pointer; transition: all 0.2s ease; ${activeTab === 'overview' ? 'background: #FFFFFF; color: #0B5A68; font-weight: 800; box-shadow: 0 2px 6px rgba(0,0,0,0.06);' : 'background: transparent; color: #64748B; font-weight: 700;'}"
+            >
+              Overview & Quiz
+            </button>
+            <button 
+              id="site-tab-btn-verification"
+              type="button"
+              onclick="window.switchSiteDetailTab('verification')"
+              style="flex: 1; padding: 8px 12px; border-radius: 9px; border: none; font-size: 12.5px; cursor: pointer; transition: all 0.2s ease; ${activeTab === 'verification' ? 'background: #FFFFFF; color: #0B5A68; font-weight: 800; box-shadow: 0 2px 6px rgba(0,0,0,0.06);' : 'background: transparent; color: #64748B; font-weight: 700;'}"
+            >
+              Verification & Checkpoints
+            </button>
           </div>
         </div>
 
+        <!-- Content Panels Area -->
+        <div style="flex: 1; overflow-y: auto; padding: 14px 16px 24px 16px; box-sizing: border-box;">
+          
+          <!-- TAB 1: OVERVIEW & QUIZ -->
+          <div id="site-tab-panel-overview" style="display: ${activeTab === 'overview' ? 'block' : 'none'};">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+              <h1 style="font-size: 20px; font-weight: 800; color: #1E293B; margin: 0;">${siteName}</h1>
+              <span style="background: rgba(18,84,99,0.1); color: #0B5A68; font-size: 10.5px; font-weight: 800; padding: 4px 10px; border-radius: 10px;">${siteCategory}</span>
+            </div>
+            <p style="font-size: 12px; color: #64748B; font-weight: 600; margin: 0 0 12px 0;">📍 ${siteLocation}</p>
+
+            <!-- Historical Sanctuary Overview -->
+            <div style="background: #FFFFFF; border-radius: 16px; padding: 14px; margin-bottom: 12px; border: 1px solid #E2E8F0; box-shadow: 0 2px 8px rgba(0,0,0,0.03);">
+              <h3 style="font-size: 13px; font-weight: 800; color: #125463; margin: 0 0 6px 0;">Historical Sanctuary Overview</h3>
+              <p style="font-size: 12px; color: #475569; line-height: 1.5; margin: 0;">${siteDescription}</p>
+            </div>
+
+            <!-- Knowledge Quiz Button -->
+            <button 
+              onclick="window.handleQuizButtonClick('${site.id}')" 
+              style="width: 100%; background: #FFFFFF; border: 1.5px solid ${quizLock.isLocked ? '#FCA5A5' : '#CBD5E1'}; border-radius: 14px; padding: 14px; display: flex; align-items: center; justify-content: space-between; cursor: pointer;">
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <span style="font-size: 22px;">🧠</span>
+                <div style="text-align: left;">
+                  <div style="font-size: 13.5px; font-weight: 800; color: #125463;">Knowledge Quiz</div>
+                  <div style="font-size: 11px; color: #64748B;">Test your archaeological knowledge</div>
+                </div>
+              </div>
+              ${quizLock.isLocked
+                ? `<span style="font-size: 10.5px; font-weight: 700; color: #DC2626; background: #FEF2F2; padding: 4px 8px; border-radius: 6px;">Locked (${quizLock.remainingMinutes}m)</span>`
+                : `<span style="font-size: 12px; font-weight: 800; color: #0C6C7A;">Start →</span>`
+              }
+            </button>
+          </div>
+
+          <!-- TAB 2: VERIFICATION & CHECKPOINTS -->
+          <div id="site-tab-panel-verification" style="display: ${activeTab === 'verification' ? 'block' : 'none'};">
+            <div style="margin-bottom: 12px;">
+              <h3 style="font-size: 15px; font-weight: 800; color: #125463; margin: 0 0 4px 0;">Landmark Verification</h3>
+              <p style="font-size: 11.5px; color: #64748B; margin: 0;">Confirm your presence and frame architectural checkpoints to claim XP rewards.</p>
+            </div>
+
+            <!-- Active On-Site Status Badge -->
+            ${isProximityLocked ? `
+              <div style="background: #FFFBEB; border: 1.5px solid #F59E0B; border-radius: 16px; padding: 14px; margin-bottom: 14px;">
+                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
+                  <span style="font-size: 13px; font-weight: 800; color: #B45309; display: flex; align-items: center; gap: 6px;">
+                    🔒 Verification & Immersion Locked
+                  </span>
+                  <span style="background: #FEF3C7; color: #92400E; font-size: 11px; font-weight: 800; padding: 4px 10px; border-radius: 12px;">
+                    Outside 500m Radius
+                  </span>
+                </div>
+                <p style="font-size: 11.5px; color: #92400E; margin: 2px 0 0 0; line-height: 1.4; font-weight: 500;">
+                  You are currently <strong>${distMeters >= 1000 ? (distMeters / 1000).toFixed(1) + ' km' : Math.round(distMeters) + ' meters'}</strong> away from ${siteName}. Please move within 500m of this landmark to unlock photo verification & dwell timers.
+                </p>
+              </div>
+            ` : `
+              <div style="background: #ECFDF5; border: 1.5px solid #10B981; border-radius: 16px; padding: 14px; margin-bottom: 14px; box-shadow: 0 2px 10px rgba(16,185,129,0.08);">
+                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
+                  <span style="font-size: 13px; font-weight: 800; color: #047857; display: flex; align-items: center; gap: 6px;">
+                    <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #10B981;"></span>
+                    Location Confirmed
+                  </span>
+                  <span style="background: #0B5A68; color: #EBB34D; font-size: 11px; font-weight: 800; padding: 4px 10px; border-radius: 12px;">
+                    📍 On-Site Verified
+                  </span>
+                </div>
+                <p id="immersion-timer-status" style="font-size: 11.5px; color: #065F46; margin: 2px 0 0 0; line-height: 1.4; font-weight: 500;">
+                  Location presence confirmed. Select an image option below to complete verification.
+                </p>
+              </div>
+            `}
+
+            <!-- Clean 3-Option Landmark Photo Verification Interface -->
+            <div style="background: #FFFFFF; border-radius: 16px; padding: 16px; border: 1px solid #E2E8F0; box-shadow: 0 2px 8px rgba(11,90,104,0.04);">
+              <h4 style="font-size: 13px; font-weight: 800; color: #0B5A68; margin: 0 0 10px 0;">Checkpoint Photo Options</h4>
+              <div style="display: flex; flex-direction: column; gap: 10px;">
+                <button 
+                  onclick="${isProximityLocked ? `window.showProximityGateModal(window.state.activeSite, ${distMeters})` : `window.openTargetFramingView('${site.id}', 1)`}" 
+                  style="width: 100%; background: ${isProximityLocked ? '#94A3B8' : '#0B5A68'}; color: #FFFFFF; border: none; padding: 14px 18px; border-radius: 12px; font-weight: 800; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 2px 6px rgba(11,90,104,0.15); opacity: ${isProximityLocked ? '0.85' : '1'};">
+                  <span>Image Option 1 ${isProximityLocked ? '(Locked)' : ''}</span>
+                  <span style="font-size: 12.5px; color: ${isProximityLocked ? '#FFF' : '#EBB34D'}; font-weight: 800;">${isProximityLocked ? '🔒 Proximity Required' : 'Frame & Match →'}</span>
+                </button>
+
+                <button 
+                  onclick="${isProximityLocked ? `window.showProximityGateModal(window.state.activeSite, ${distMeters})` : `window.openTargetFramingView('${site.id}', 2)`}" 
+                  style="width: 100%; background: ${isProximityLocked ? '#94A3B8' : '#0B5A68'}; color: #FFFFFF; border: none; padding: 14px 18px; border-radius: 12px; font-weight: 800; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 2px 6px rgba(11,90,104,0.15); opacity: ${isProximityLocked ? '0.85' : '1'};">
+                  <span>Image Option 2 ${isProximityLocked ? '(Locked)' : ''}</span>
+                  <span style="font-size: 12.5px; color: ${isProximityLocked ? '#FFF' : '#EBB34D'}; font-weight: 800;">${isProximityLocked ? '🔒 Proximity Required' : 'Frame & Match →'}</span>
+                </button>
+
+                <button 
+                  onclick="${isProximityLocked ? `window.showProximityGateModal(window.state.activeSite, ${distMeters})` : `window.openTargetFramingView('${site.id}', 3)`}" 
+                  style="width: 100%; background: ${isProximityLocked ? '#94A3B8' : '#0B5A68'}; color: #FFFFFF; border: none; padding: 14px 18px; border-radius: 12px; font-weight: 800; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 2px 6px rgba(11,90,104,0.15); opacity: ${isProximityLocked ? '0.85' : '1'};">
+                  <span>Image Option 3 ${isProximityLocked ? '(Locked)' : ''}</span>
+                  <span style="font-size: 12.5px; color: ${isProximityLocked ? '#FFF' : '#EBB34D'}; font-weight: 800;">${isProximityLocked ? '🔒 Proximity Required' : 'Frame & Match →'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+        </div>
       </div>
-
-      <!-- Persistent Footer Nav -->
-      ${typeof renderGlobalFooter === 'function' ? renderGlobalFooter('home') : ''}
-    </div>
-  `;
+    `;
+  } catch (err) {
+    console.error(`[SITE-RUNTIME ERROR] stage=${stage} name=${err?.name || 'Error'} message=${err?.message || err} stack=${err?.stack || ''}`);
+    return `
+      <div class="screen" style="padding: 24px; text-align: center; color: #1E293B; background: #FAF5E8; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; box-sizing: border-box;">
+        <div style="font-size: 38px; margin-bottom: 8px;">🏛️</div>
+        <h3 style="font-size: 18px; font-weight: 800; color: #0B5A68; margin-bottom: 6px;">Site Detail Render Error</h3>
+        <p style="font-size: 12.5px; color: #64748B; margin-bottom: 18px; line-height: 1.45;">Failed to render site view (${err.message}).</p>
+        <button onclick="window.executeAppNavigation('directory')" style="background: #0B5A68; color: #FFFFFF; border: none; border-radius: 11px; padding: 11px 20px; font-weight: 800; font-size: 13px; cursor: pointer; box-shadow: 0 4px 12px rgba(11,90,104,0.3);">
+          Back to Directory →
+        </button>
+      </div>
+    `;
+  }
 }
 
 
@@ -9279,61 +9351,14 @@ function renderSettings() {
 window.updateGlobalFooterVisibility = function () {
   const globalNav = document.getElementById('body-direct-global-nav');
   if (globalNav) {
-    const currentHashOrRoute = window.location.hash || window.state?.currentScreen || '';
-    const isPrimaryView = ['home', 'activism', 'rewards', 'profile', 'directory'].includes(window.state?.currentScreen);
-
-    // Rule 7: Detect any half-screen card, distance notice, site preview, modal, or blurred backdrop overlay
-    const hasOverlayOrModal = Boolean(
-      document.getElementById('site-preview-drawer-backdrop') ||
-      document.getElementById('proximity-gate-modal-overlay') ||
-      document.getElementById('site-preview-modal') ||
-      document.getElementById('medals-gallery-modal-overlay') ||
-      document.getElementById('checkpoint-briefing-modal-overlay') ||
-      document.getElementById('auth-required-modal-overlay') ||
-      document.getElementById('match-confidence-modal') ||
-      document.getElementById('map-popup-card') ||
-      document.querySelector('.auth-modal-overlay') ||
-      document.querySelector('.modal-overlay') ||
-      document.querySelector('.site-preview-container') ||
-      document.querySelector('.camera-viewfinder-active') ||
-      document.querySelector('.backdrop-blur') ||
-      document.querySelector('.yathra-modal-backdrop') ||
-      document.querySelector('[id*="modal-overlay"]') ||
-      document.querySelector('[class*="modal-overlay"]') ||
-      document.body.classList.contains('modal-active') ||
-      document.body.classList.contains('camera-active') ||
-      currentHashOrRoute.includes('camera') ||
-      currentHashOrRoute.includes('framing')
-    );
-
-    if (!isPrimaryView || hasOverlayOrModal) {
+    const isPrimaryView = ['home', 'dashboard', 'activism', 'rewards', 'profile'].includes(window.state?.currentScreen);
+    if (!isPrimaryView) {
       globalNav.style.setProperty('display', 'none', 'important');
-      globalNav.classList.add('hidden-nav-forced');
     } else {
-      globalNav.style.setProperty('display', 'flex', 'important');
-      globalNav.classList.remove('hidden-nav-forced');
+      globalNav.style.setProperty('display', 'block', 'important');
     }
   }
 };
-
-window.addEventListener('hashchange', window.updateGlobalFooterVisibility);
-
-// Rule 7 Automated DOM Observer for Instant Footer Hiding on Overlays/Modals
-if (typeof MutationObserver !== 'undefined' && !window._globalFooterMutationObserver) {
-  window._globalFooterMutationObserver = new MutationObserver(() => {
-    if (typeof window.updateGlobalFooterVisibility === 'function') {
-      window.updateGlobalFooterVisibility();
-    }
-  });
-  try {
-    window._globalFooterMutationObserver.observe(document.body, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ['style', 'class', 'id']
-    });
-  } catch (e) { }
-}
 
 function renderGlobalFooter(activeTab = 'home') {
   const tabs = [
@@ -9359,8 +9384,8 @@ function renderGlobalFooter(activeTab = 'home') {
     }
   ];
 
-  const footerHTML = `
-    <div class="global-bottom-nav" style="position: fixed !important; bottom: 0 !important; left: 0 !important; width: 100% !important; height: 64px !important; background: #FFFFFF !important; border-top: 1px solid #E2E8F0 !important; display: flex !important; align-items: center !important; justify-content: space-around !important; z-index: 2147483647 !important; transform: translateZ(0) !important; box-shadow: 0 -4px 20px rgba(0,0,0,0.08) !important; box-sizing: border-box; padding-bottom: max(env(safe-area-inset-bottom), 0px);">
+  return `
+    <div class="global-bottom-nav" style="position: fixed !important; bottom: 0 !important; left: 0 !important; width: 100% !important; height: 64px !important; background: #FFFFFF !important; border-top: 1px solid #E2E8F0 !important; display: flex !important; align-items: center !important; justify-content: space-around !important; z-index: 1000 !important; transform: translateZ(0) !important; box-shadow: 0 -4px 20px rgba(0,0,0,0.08) !important; box-sizing: border-box; padding-bottom: max(env(safe-area-inset-bottom), 0px);">
       ${tabs.map(tab => {
     const isActive = activeTab === tab.id;
     const color = isActive ? '#E5A93C' : '#0B5A68';
@@ -9369,7 +9394,7 @@ function renderGlobalFooter(activeTab = 'home') {
           <button 
             type="button" 
             class="nav-item ${isActive ? 'active' : ''}"
-            onclick="window.navigate('${tab.id}')" 
+            onclick="window.executeAppNavigation('${tab.id}')" 
             style="background: transparent !important; border: none; font-size: 10.5px; font-weight: ${weight}; color: ${color} !important; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 3px; outline: none; flex: 1; padding: 6px 0;">
             ${tab.icon}
             <span>${tab.label}</span>
@@ -9378,20 +9403,6 @@ function renderGlobalFooter(activeTab = 'home') {
   }).join('')}
     </div>
   `;
-
-  // Render directly as a child of document.body (outside #app and screen containers)
-  let bodyFooter = document.getElementById('body-direct-global-nav');
-  if (!bodyFooter) {
-    bodyFooter = document.createElement('div');
-    bodyFooter.id = 'body-direct-global-nav';
-    document.body.appendChild(bodyFooter);
-  }
-  bodyFooter.innerHTML = footerHTML;
-  if (typeof window.updateGlobalFooterVisibility === 'function') {
-    window.updateGlobalFooterVisibility();
-  }
-
-  return '';
 }
 window.renderGlobalFooter = renderGlobalFooter;
 window.renderBottomNav = renderGlobalFooter;
