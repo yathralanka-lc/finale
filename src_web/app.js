@@ -316,6 +316,7 @@ window.clearActiveUserData = function (options = {}) {
     window.state.pendingProfileSync = null;
     window.state.isAuthenticating = false;
     window.state.authTransition = null;
+    window.state.sessionAuthorized = false;
   }
 
   // Clear shared active-user pointers from localStorage (leaving UID-scoped profiles intact)
@@ -605,6 +606,7 @@ window.handlePostAuthUserSuccess = async function ({ firebaseUser, authProvider,
   window.state.activeUid = uid;
   window.state.isGuest = false;
   window.state.isLoggedIn = true;
+  window.state.sessionAuthorized = true;
 
   window.saveStoredUserProfile(uid, userSession);
   localStorage.setItem('yathralanka_logged_in', 'true');
@@ -664,6 +666,7 @@ function completeVerifiedAuthentication({ attemptId, firebaseUser, userSession }
   window.state.activeUid = userSession.uid;
   window.state.isGuest = false;
   window.state.isLoggedIn = true;
+  window.state.sessionAuthorized = true;
 
   if (window.state.pendingAuthReturn) {
     const pending = window.state.pendingAuthReturn;
@@ -987,36 +990,37 @@ function extractDisplayName(user) {
 // ============================================================================
 let isAppRouterInitialized = false;
 
-window.initAppRouter = function () {
+window.initAppRouter = async function () {
   if (isAppRouterInitialized) return;
   isAppRouterInitialized = true;
+
+  if (!window.state) window.state = {};
 
   const urlParams = new URLSearchParams(window.location.search);
   const mode = urlParams.get('mode');
   const emailParam = urlParams.get('email');
   const urlUserName = urlParams.get('user_name');
 
-  // Handle mode === 'resetPassword'
+  // Deep Link Exception 1: Password Reset
   if (mode === 'resetPassword' && emailParam) {
     const email = decodeURIComponent(emailParam).trim().toLowerCase();
 
-    // Set state directly and navigate to auth view
-    if (!window.state) window.state = {};
     window.state.currentScreen = 'auth';
     window.state.authActiveTab = 'signin';
-
     window.navigate('auth');
 
-    // Mount the in-app password reset card once DOM is ready
     setTimeout(() => {
       if (typeof window.renderNewPasswordScreen === 'function') {
         window.renderNewPasswordScreen(email);
       }
     }, 50);
+
+    window.__freshBootHandled = true;
+    window.__startupSessionPolicyComplete = true;
     return;
   }
 
-  // PATH 1: Email Activation
+  // Deep Link Exception 2: Email Activation
   if (mode === 'activateAccount' && emailParam) {
     const email = decodeURIComponent(emailParam).trim().toLowerCase();
     const pendingDb = JSON.parse(localStorage.getItem('yathralanka_pending_users') || '{}');
@@ -1052,11 +1056,14 @@ window.initAppRouter = function () {
     localStorage.setItem('yathralanka_current_user', JSON.stringify(confirmedUser));
     localStorage.setItem('yathralanka_active_user', JSON.stringify(confirmedUser));
 
-    if (!window.state) window.state = {};
     window.state.user = confirmedUser;
     window.state.currentUser = confirmedUser;
     window.state.isGuest = false;
     window.state.isLoggedIn = true;
+    window.state.sessionAuthorized = true;
+
+    window.__freshBootHandled = true;
+    window.__startupSessionPolicyComplete = true;
 
     window.history.replaceState({}, document.title, window.location.pathname);
     window.navigate('home');
@@ -1069,63 +1076,52 @@ window.initAppRouter = function () {
     localStorage.removeItem('yathralanka_session_mode');
   }
 
-  // Deterministic Startup Routing & Timeout Protection
-  const sessionMode = localStorage.getItem('yathralanka_session_mode');
+  // Fresh Application Launch Startup Policy (Step 6A.5.4)
+  if (!window.__freshBootHandled) {
+    window.__freshBootHandled = true;
+    console.log('[STARTUP-SESSION] Initiating fresh boot startup policy...');
 
-  if (!window.__startupTimeoutHandle) {
-    window.__startupTimeoutHandle = setTimeout(() => {
-      if (!window.__appSettled) {
-        console.warn('[STARTUP-TIMEOUT] Auth did not settle within 6s. Executing fallback routing.');
-        window.__appSettled = true;
-        const currentMode = localStorage.getItem('yathralanka_session_mode');
-        if (currentMode === 'authenticated' && auth?.currentUser?.uid) {
-          const uid = auth.currentUser.uid;
-          const cached = window.getStoredUserProfile(uid) || {
-            uid,
-            name: auth.currentUser.displayName || 'Explorer',
-            displayName: auth.currentUser.displayName || 'Explorer',
-            email: auth.currentUser.email || '',
-            xp: 50,
-            rank: 'Novice Explorer',
-            isGuest: false
-          };
-          if (!window.state) window.state = {};
-          window.state.user = cached;
-          window.state.currentUser = cached;
-          window.state.isGuest = false;
-          window.state.isLoggedIn = true;
-          if (typeof window.executeAppNavigation === 'function') window.executeAppNavigation('home');
-        } else {
-          if (!window.state) window.state = {};
-          window.state.currentUser = null;
-          window.state.user = null;
-          window.state.isGuest = false;
-          window.state.isLoggedIn = false;
-          window.state.sessionMode = 'signed_out';
-          if (typeof window.executeAppNavigation === 'function') window.executeAppNavigation('welcome');
-        }
+    window.state.authTransition = "startup-signout";
+    window.state.sessionAuthorized = false;
+    window.state.isGuest = false;
+    window.state.isLoggedIn = false;
+    window.state.sessionMode = "signed_out";
+    window.state.user = null;
+    window.state.currentUser = null;
+    window.state.activeUid = null;
+    window.state.authAttempt = null;
+
+    // Clear active-session pointers without destroying stored UID-scoped records
+    localStorage.removeItem('yathralanka_logged_in');
+    localStorage.removeItem('yathralanka_session_mode');
+    sessionStorage.removeItem('yathralanka_session_mode');
+    localStorage.removeItem('yathralanka_current_user');
+    localStorage.removeItem('yathralanka_active_user');
+    localStorage.removeItem('yathralanka_user');
+
+    // Safely clear active Firebase auth session on cold launch
+    if (typeof auth !== 'undefined' && auth && auth.currentUser) {
+      try {
+        console.log('[STARTUP-SESSION] Performing silent startup sign-out of restored Firebase session...');
+        await signOut(auth);
+        console.log('[STARTUP-SESSION] Silent startup sign-out complete.');
+      } catch (err) {
+        console.warn('[STARTUP-SESSION] Error during silent startup sign-out:', err);
       }
-    }, 6000);
-  }
+    }
 
-  if (sessionMode === 'authenticated') {
-    console.log('[BOOT] Authenticated session mode detected; waiting for Firebase auth state observer...');
-    return;
-  }
+    window.state.authTransition = null;
+    window.state.sessionMode = "signed_out";
+    window.state.isGuest = false;
+    window.state.isLoggedIn = false;
+    window.__startupSessionPolicyComplete = true;
 
-  window.__appSettled = true;
-  if (window.__startupTimeoutHandle) clearTimeout(window.__startupTimeoutHandle);
-
-  if (!window.state) window.state = {};
-  window.state.currentUser = null;
-  window.state.user = null;
-  window.state.isGuest = false;
-  window.state.isLoggedIn = false;
-  window.state.sessionMode = 'signed_out';
-  if (typeof window.executeAppNavigation === 'function') {
-    window.executeAppNavigation('welcome');
-  } else if (typeof window.navigate === 'function') {
-    window.navigate('welcome');
+    console.log('[STARTUP-SESSION] Startup cleanup finished -> Rendering Welcome screen');
+    if (typeof window.executeAppNavigation === 'function') {
+      window.executeAppNavigation('welcome');
+    } else if (typeof window.navigate === 'function') {
+      window.navigate('welcome');
+    }
   }
 };
 
@@ -4935,10 +4931,21 @@ function initAuthListener() {
       window.__startupTimeoutHandle = null;
     }
 
+    if (!window.__startupSessionPolicyComplete) {
+      console.log("[STARTUP-SESSION] auth observer deferred");
+      return;
+    }
+
     if (user && user.uid) {
       console.log("👤 Firebase User Authenticated:", user.displayName || user.email, "UID:", user.uid);
 
       if (!window.state) window.state = {};
+
+      if (window.state.sessionAuthorized !== true) {
+        console.log("[STARTUP-SESSION] Restored Firebase session detected without explicit session authorization. Ignoring auto-navigation to home.");
+        return;
+      }
+
       if (window.state.activeUid && window.state.activeUid !== user.uid) {
         console.log(`[AUTH-STATE] UID changed from ${window.state.activeUid.slice(-6)} to ${user.uid.slice(-6)}. Clearing session.`);
         if (typeof window.clearActiveUserSession === 'function') {
@@ -4974,7 +4981,7 @@ function initAuthListener() {
       localStorage.setItem('yathralanka_logged_in', 'true');
 
       if (window.state.currentScreen === 'welcome' || window.state.currentScreen === 'auth' || !window.state.currentScreen) {
-        console.log('[AUTH-ROUTING] Valid session restored -> Navigating to authenticated Dashboard');
+        console.log('[AUTH-ROUTING] Valid authorized session -> Navigating to authenticated Dashboard');
         if (typeof window.executeAppNavigation === 'function') {
           window.executeAppNavigation('home');
         } else if (typeof window.navigate === 'function') {
@@ -4988,6 +4995,11 @@ function initAuthListener() {
     } else {
       console.log("👤 Firebase User Unauthenticated (No active session)");
       if (!window.state) window.state = {};
+
+      if (window.state?.authTransition === 'startup-signout') {
+        console.log('[AUTH-STATE] transient null-user event ignored during startup-signout cleanup');
+        return;
+      }
 
       if (window.state?.authTransition === 'switching-provider') {
         console.log('[AUTH-STATE] transient sign-out ignored during provider switch');
