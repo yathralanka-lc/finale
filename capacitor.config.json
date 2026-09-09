@@ -1,0 +1,22 @@
+{
+	"appId": "com.yathralanka.app",
+	"appName": "YathraLanka",
+	"webDir": "www",
+	"server": {
+		"androidScheme": "https"
+	},
+	"plugins": {
+		"StatusBar": {
+			"overlaysWebView": true,
+			"style": "DARK"
+		},
+		"GoogleAuth": {
+			"scopes": [
+				"profile",
+				"email"
+			],
+			"serverClientId": "1032179534120-ttht7fjohqbvdrjurvjnudnr9ebggfp8.apps.googleusercontent.com",
+			"forceCodeForRefreshToken": false
+		}
+	}
+}

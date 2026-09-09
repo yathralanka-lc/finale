@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+
+# Build output
+www/
+dist/
+build/
+android/build/
+android/app/build/
+
+# Android local/generated files
+android/local.properties
+android/.gradle/
+android/.idea/
+android/.kotlin/
+
+# Firebase Android configuration
+android/app/google-services.json
+
+# Signing keys / certificates
+*.jks
+*.keystore
+*.p12
+*.pem
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Credentials / secrets
+client_secret*.json
+service-account*.json
+credentials*.json
+*.json.secret
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Historical/local credential working folders
+Oath Client/

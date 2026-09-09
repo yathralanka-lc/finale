@@ -1,0 +1,3 @@
+Constraint & Stop Protocol: Modify only the specific files, methods, or blocks explicitly requested. Do not refactor unrelated code, alter existing architectures, reformat untouched files, or introduce unsolicited dependencies. Keep all other working logic, visuals, and configurations strictly intact.
+
+Mandatory Stop Condition: If making the requested change would unintentionally impact, break, or require alterations to any other functionality, style, or dependency, STOP IMMEDIATELY. Do not proceed with the code changes—explain the conflict or side-effect first and ask for my explicit consent before moving forward.

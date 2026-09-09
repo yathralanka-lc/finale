@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">YathraLanka</string>
+    <string name="title_activity_main">YathraLanka</string>
+    <string name="package_name">com.yathralanka.app</string>
+    <string name="custom_url_scheme">com.yathralanka.app</string>
+    <string name="server_client_id">1032179534120-ttht7fjohqbvdrjurvjnudnr9ebggfp8.apps.googleusercontent.com</string>
+</resources>
