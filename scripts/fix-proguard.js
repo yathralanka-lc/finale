@@ -22,4 +22,4 @@ function scanAndFix(dir) {
   });
 }
 
-scanAndFix(path.join(nodeModulesPath, '@capacitor'));
+scanAndFix(nodeModulesPath);

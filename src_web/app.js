@@ -32,6 +32,8 @@ window.addEventListener('unhandledrejection', (e) => {
   console.error('[FREEZE-REJECTION] Unhandled Rejection:', e.reason, e.reason?.stack);
 });
 
+
+
 window._freezeLogHistory = window._freezeLogHistory || [];
 
 const origConsoleLog = console.log;
@@ -39,7 +41,7 @@ console.log = function (...args) {
   origConsoleLog.apply(console, args);
   try {
     const msg = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
-    if (msg.includes('MAP-ACTUAL') || msg.includes('SITE-ACTUAL') || msg.includes('FREEZE')) {
+    if (msg.includes('MAP-ACTUAL') || msg.includes('SITE-ACTUAL') || msg.includes('FREEZE') || msg.includes('MAP-FREEZE') || msg.includes('SITE-FREEZE')) {
       window._freezeLogHistory.push(msg);
       if (window._freezeLogHistory.length > 20) window._freezeLogHistory.shift();
     }
@@ -55,77 +57,78 @@ window.__siteTapCounters = {
   executeAppNavigation: 0
 };
 
-window.__dumpFreezeState = function () {
+window.__freezeProbe = function(label) {
   try {
     const cx = Math.floor(window.innerWidth / 2);
     const cy = Math.floor(window.innerHeight / 2);
-    const topEl = document.elementFromPoint(cx, cy);
-    const cs = topEl ? window.getComputedStyle(topEl) : null;
-    const rect = topEl ? topEl.getBoundingClientRect() : null;
+    const centerEl = document.elementFromPoint(cx, cy);
 
-    const lastLogs = (window._freezeLogHistory || []).slice(-3).join(' | ');
+    const allEls = Array.from(document.querySelectorAll('*'));
+    const positioned = [];
+    const coveringBig = [];
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
 
-    const info = {
-      timestamp: Date.now(),
+    allEls.forEach(el => {
+      const cs = window.getComputedStyle(el);
+      if (cs.position === 'fixed' || cs.position === 'absolute') {
+        const zIndex = parseInt(cs.zIndex, 10) || 0;
+        const rect = el.getBoundingClientRect();
+        const area = rect.width * rect.height;
+        const viewportArea = vw * vh;
+        if (area > 0.8 * viewportArea && cs.display !== 'none' && cs.visibility !== 'hidden') {
+          coveringBig.push({
+            tagName: el.tagName, id: el.id, className: el.className,
+            zIndex, pointerEvents: cs.pointerEvents, display: cs.display,
+            visibility: cs.visibility, opacity: cs.opacity
+          });
+        }
+        if (zIndex > 0 || cs.position === 'fixed') {
+          positioned.push({
+            tagName: el.tagName, id: el.id, className: el.className,
+            zIndex, position: cs.position, pointerEvents: cs.pointerEvents
+          });
+        }
+      }
+    });
+
+    positioned.sort((a, b) => b.zIndex - a.zIndex);
+    const csCenter = centerEl ? window.getComputedStyle(centerEl) : null;
+
+    const report = {
+      label,
       currentScreen: window.state?.currentScreen,
-      currentParams: window.state?.currentParams,
-      isAuthenticating: window.state?.isAuthenticating,
-      authCurrentUser: (typeof auth !== 'undefined' && auth?.currentUser) ? auth.currentUser.uid : null,
-      isGuest: window.state?.isGuest,
-      isLoggedIn: window.state?.isLoggedIn,
-      user: window.state?.user,
-      currentUser: window.state?.currentUser,
-      activeLeafletMap: Boolean(window.activeLeafletMap),
-      yathraMapInstance: Boolean(window.yathraMapInstance),
-      mapIdCount: document.querySelectorAll('#map').length,
-      mapIdAttrCount: document.querySelectorAll('[id="map"]').length,
-      leafletContainerCount: document.querySelectorAll('.leaflet-container').length,
-      leafletPaneCount: document.querySelectorAll('.leaflet-pane').length,
-      idElementCount: document.querySelectorAll('[id]').length,
-      sitePreviewBackdropIdCount: document.querySelectorAll('#site-preview-drawer-backdrop').length,
-      sitePreviewBackdropClassCount: document.querySelectorAll('.site-preview-drawer-backdrop').length,
-      proximityGateCount: document.querySelectorAll('#proximity-gate-modal-overlay').length,
-      authRequiredModalCount: document.querySelectorAll('#auth-required-modal-overlay').length,
-      siteTapCounters: window.__siteTapCounters,
       centerElement: {
-        tagName: topEl?.tagName || 'NONE',
-        id: topEl?.id || '',
-        className: topEl?.className || '',
-        position: cs?.position || '',
-        zIndex: cs?.zIndex || '',
-        pointerEvents: cs?.pointerEvents || '',
-        display: cs?.display || '',
-        visibility: cs?.visibility || '',
-        opacity: cs?.opacity || '',
-        rect: rect ? { top: Math.round(rect.top), left: Math.round(rect.left), width: Math.round(rect.width), height: Math.round(rect.height) } : null
+        tagName: centerEl?.tagName,
+        id: centerEl?.id,
+        className: centerEl?.className,
+        pointerEvents: csCenter?.pointerEvents,
+        display: csCenter?.display,
+        visibility: csCenter?.visibility,
+        opacity: csCenter?.opacity
+      },
+      topPositioned: positioned.slice(0, 10),
+      coveringOver80Percent: coveringBig,
+      mapState: {
+        activeLeafletMapExists: Boolean(window.activeLeafletMap),
+        yathraMapInstanceExists: Boolean(window.yathraMapInstance),
+        mapElementInDom: Boolean(document.getElementById('map'))
       }
     };
-    origConsoleLog('[FREEZE-STATE-DUMP]', JSON.stringify(info));
-
-    // Render live top diagnostic banner
-    let banner = document.getElementById('freeze-debug-live-banner');
-    if (!banner) {
-      banner = document.createElement('div');
-      banner.id = 'freeze-debug-live-banner';
-      banner.style.cssText = 'position: fixed; top: 0; left: 0; width: 100%; z-index: 2147483647; background: rgba(15,23,42,0.92); color: #38BDF8; font-family: monospace; font-size: 9.5px; padding: 6px 8px; box-sizing: border-box; pointer-events: none; border-bottom: 1px solid #0284C7;';
-      document.body.appendChild(banner);
-    }
-    banner.innerHTML = `
-      <div style="font-weight: bold; color: #FACC15;">[DIAG] Screen: ${info.currentScreen} | JS: ${info.timestamp}</div>
-      <div style="color: #38BDF8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Top: ${info.centerElement.tagName}#${info.centerElement.id}.${info.centerElement.className} (z:${info.centerElement.zIndex}, pos:${info.centerElement.position}, pe:${info.centerElement.pointerEvents})</div>
-      <div style="color: #4ADE80; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Overlays: preview:${info.sitePreviewBackdropIdCount}/${info.sitePreviewBackdropClassCount} prox:${info.proximityGateCount} auth:${info.authRequiredModalCount}</div>
-      <div style="color: #F472B6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Logs: ${lastLogs || 'none'}</div>
-    `;
-
-    return info;
+    origConsoleLog(`[FREEZE-PROBE] ${label}:`, JSON.stringify(report));
+    return report;
   } catch (err) {
-    origConsoleLog('[FREEZE-STATE-DUMP-ERR]', err);
+    origConsoleLog('[FREEZE-PROBE-ERR]', err);
   }
+};
+
+window.__dumpFreezeState = function () {
+  return window.__freezeProbe('STATE-DUMP');
 };
 
 document.addEventListener('pointerdown', (e) => {
   try {
-    console.log('[FREEZE-POINTERDOWN]', 'Time:', Date.now(), 'Pos:', Math.round(e.clientX), Math.round(e.clientY), 'Target:', e.target?.tagName, e.target?.id || e.target?.className);
+    console.log('[MAP-FREEZE 21] [SITE-FREEZE 18] [FREEZE-POINTERDOWN]', 'Time:', Date.now(), 'Pos:', Math.round(e.clientX), Math.round(e.clientY), 'Target:', e.target?.tagName, e.target?.id || e.target?.className);
   } catch (err) {}
 }, true);
 
@@ -1385,6 +1388,7 @@ window.initGlobalSiteClickListeners = function () {
     if (!trigger) return;
 
     let siteId = trigger.getAttribute('data-site-id') || trigger.getAttribute('data-id') || trigger.dataset?.siteId;
+    console.log('[SITE-FREEZE HANDLER D - global delegation] trigger clicked siteId:', siteId);
     if (siteId && typeof window.openSitePreview === 'function' && !e.defaultPrevented) {
       console.log("🖱️ Site card selected via global delegation:", siteId);
       window.openSitePreview(siteId);
@@ -1980,60 +1984,13 @@ window.showVerificationModal = function (site, xpEarned, title, message) {
   };
 };
 
-// Universal Site Detail Opener (Defined early)
+// Universal Site Detail Opener (Delegates to authoritative definition at line 3411)
 window.selectAndOpenSite = function (siteId) {
-  console.log('[FREEZE-DEBUG] site selection received (def 1):', siteId);
-  console.log("👉 Opening Site Detail Screen for ID:", siteId);
-  if (!siteId && siteId !== 0) return;
-
-  // Retrieve dataset pool safely
-  const pool = window.sitesData || (typeof sitesData !== 'undefined' ? sitesData : []);
-  const rawList = Array.isArray(pool) ? pool : Object.values(pool);
-  const siteList = rawList.filter(s => s && typeof s === 'object');
-
-  const cleanId = String(siteId).toLowerCase().trim();
-
-  // Find matching site safely
-  let site = siteList.find(s => {
-    if (!s) return false;
-    const sid = s.id ? String(s.id).toLowerCase().trim() : '';
-    const slug = s.slug ? String(s.slug).toLowerCase().trim() : '';
-    const name = s.name ? String(s.name).toLowerCase().trim() : '';
-    const normName = s.name ? s.name.toLowerCase().replace(/[^a-z0-9]/g, '_') : '';
-    return sid === cleanId || slug === cleanId || name === cleanId || normName === cleanId;
-  });
-
-  // Fallback object if not found
-  if (!site) {
-    site = {
-      id: siteId,
-      name: String(siteId).replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()),
-      location: "Sri Lanka",
-      description: "Historical archaeological landmark and cultural heritage sanctuary.",
-      image: "Element Pictures/placeholder.jpg",
-      xp: 75,
-      category: "Heritage Trail"
-    };
-  }
-
-  // Update State
-  if (!window.state) window.state = {};
-  if (!window.state.verifiedSites) {
-    try {
-      window.state.verifiedSites = JSON.parse(localStorage.getItem('yathra_verified_sites') || '[]');
-    } catch (e) {
-      window.state.verifiedSites = [];
-    }
-  }
-
-  window.state.activeSite = site;
-  window.state.selectedSite = site;
-  if (typeof window.navigate === 'function') {
-    return window.navigate('site-detail', { id: site.id || siteId });
-  } else if (typeof window.executeAppNavigation === 'function') {
-    return window.executeAppNavigation('site-detail', { id: site.id || siteId });
+  if (typeof window.executeAppNavigation === 'function') {
+    return window.executeAppNavigation('site-detail', { id: siteId });
   }
 };
+window.openSiteById = window.selectAndOpenSite;
 
 window.openSiteById = window.selectAndOpenSite;
 
@@ -3025,32 +2982,25 @@ window.handleSignOut = function () {
 // --- BULLETPROOF ROUTER EXECUTION & MAP THREAD UNLOCKER ---
 window.executeAppNavigation = function (targetScreen, params = {}) {
   try {
+    if (targetScreen === 'map' || targetScreen === 'wanderer') {
+      console.log('[MAP-FREEZE 03] navigate("map") requested');
+    } else if (targetScreen === 'site-detail' || targetScreen === 'site_preview') {
+      console.log('[SITE-FREEZE 09] navigation to site-detail requested');
+    }
+
     if (window.__siteTapCounters) {
       window.__siteTapCounters.executeAppNavigation++;
       window.__siteTapCounters.navigate++;
     }
-    if (targetScreen === 'home' || targetScreen === 'dashboard') {
-      console.trace('[HOME-NAV-CALL]', 'executeAppNavigation:' + targetScreen);
-      console.log('[AUTH-STATE-ON-DASHBOARD-RENDER]', JSON.stringify({
-        authCurrentUser: (typeof auth !== 'undefined' && auth?.currentUser) ? auth.currentUser.uid : null,
-        isGuest: window.state?.isGuest,
-        isLoggedIn: window.state?.isLoggedIn,
-        currentScreen: window.state?.currentScreen,
-        user: window.state?.user,
-        currentUser: window.state?.currentUser
-      }));
-    }
-    console.log(`[ROUTER 01] navigation requested target=${targetScreen}`);
-    console.log(`[ROUTER 02] currentScreen before=${window.state?.currentScreen}`);
+    console.log(`[ROUTER 01] [MAP-FREEZE 04] [SITE-FREEZE 10] router entered target=${targetScreen}, currentScreen before=${window.state?.currentScreen}`);
 
     if (!window.state) window.state = {};
+    const screenBefore = window.state.currentScreen;
     window.state.isAuthenticating = false;
     window.state.currentScreen = targetScreen;
     window.state.currentParams = params;
 
-    console.log(`[ROUTER 03] assigning currentScreen target=${targetScreen}`);
-    console.log(`[ROUTER 04] currentScreen after assignment=${window.state?.currentScreen}`);
-    console.log(`[ROUTER 05] renderer selected for=${targetScreen}`);
+    console.log(`[ROUTER 04] [MAP-FREEZE 05] [MAP-FREEZE 06] [SITE-FREEZE 11] currentScreen assigned before=${screenBefore}, after=${window.state?.currentScreen}`);
 
     // Clean up any lingering overlays, modals, or backdrops across screen changes
     ['auth-loading-overlay', 'site-preview-drawer-backdrop', 'proximity-gate-modal-overlay', 'auth-required-modal-overlay', 'welcome-interception-modal', 'checkpoint-modal-overlay'].forEach(id => {
@@ -3124,7 +3074,7 @@ window.executeAppNavigation = function (targetScreen, params = {}) {
       }
     }
 
-    console.log(`[ROUTER 06] renderer entered for=${targetScreen}`);
+    console.log(`[ROUTER 06] [SITE-FREEZE 12] renderer entered for=${targetScreen}`);
     let htmlContent = '';
 
     switch (targetScreen) {
@@ -3305,7 +3255,7 @@ window.executeAppNavigation = function (targetScreen, params = {}) {
 
     viewport.innerHTML = htmlContent;
     viewport.scrollTop = 0;
-    console.log(`[ROUTER 07] DOM render completed for=${targetScreen}`);
+    console.log(`[ROUTER 07] [MAP-FREEZE 07] [SITE-FREEZE 13] DOM render completed for=${targetScreen}`);
     console.log(`[ROUTER 08] currentScreen after render=${window.state?.currentScreen}`);
 
     // Primary Navigation Screens showing Global Bottom Nav
@@ -3331,7 +3281,7 @@ window.executeAppNavigation = function (targetScreen, params = {}) {
     }
 
     console.log(`[ROUTER 09] post-render events attached`);
-    console.log(`[ROUTER 10] navigation returned target=${targetScreen}`);
+    console.log(`[ROUTER 10] [SITE-FREEZE 17] navigation returned target=${targetScreen}`);
 
     // Immediately sync diagnostic banner with the newly rendered screen
     if (typeof window.__dumpFreezeState === 'function') {
@@ -3405,6 +3355,7 @@ window.showProximityGateModal = function (site, distMeters) {
 };
 
 window.selectAndOpenSite = function (siteId) {
+  console.log('[SITE-FREEZE HANDLER C - selectAndOpenSite Def 2 (Line 3409)] entered siteId:', siteId);
   if (window.__siteTapCounters) {
     window.__siteTapCounters.selectAndOpenSite++;
     console.log('[SITE-TAP-COUNT]', JSON.stringify(window.__siteTapCounters));
@@ -3453,11 +3404,14 @@ window.selectAndOpenSite = function (siteId) {
   const userLat = (window.userCoordinates && window.userCoordinates.latitude) ? window.userCoordinates.latitude : (window.state?.userCoordinates?.latitude || 6.9271);
   const userLng = (window.userCoordinates && window.userCoordinates.longitude) ? window.userCoordinates.longitude : (window.state?.userCoordinates?.longitude || 79.8612);
 
-  const siteLat = site.latitude || 6.9271;
-  const siteLng = site.longitude || 79.8612;
+  const siteLat = site.lat || site.latitude || 6.9271;
+  const siteLng = site.lng || site.longitude || 79.8612;
 
   const distMeters = typeof calculateHaversineDistanceMeters === 'function' ? calculateHaversineDistanceMeters(userLat, userLng, siteLat, siteLng) : 0;
   const isTooFar = distMeters > 500 && (!window.state?.demoOverride || !window.state.demoOverride.active);
+
+  // Clean up any lingering site preview drawers before opening detail or proximity modal
+  document.querySelectorAll('#site-preview-drawer-backdrop, .site-preview-drawer-backdrop').forEach(el => el.remove());
 
   if (isTooFar) {
     window.state.siteProximityLocked = true;
@@ -3612,13 +3566,16 @@ function renderMapScreen(params = {}) {
 window.initLeafletMapInstance = function () {
   console.log('[MAP-ACTUAL 06] initializeYathraMap entered');
   console.log('[MAP-ACTUAL 07] initLeafletMapInstance entered');
-  console.log('[MAP-FREEZE 04] map initialization entered');
+  console.log('[MAP-FREEZE 10] map initialization starts');
   try {
     const mapElement = document.getElementById('map');
     if (!mapElement) {
       console.warn('[FREEZE-DEBUG] map initialization failed: #map container element not found');
       return;
     }
+    console.log('[MAP-FREEZE 08] map container found:', mapElement.id);
+    const rect = mapElement.getBoundingClientRect();
+    console.log('[MAP-FREEZE 09] map container dimensions:', `offsetWidth=${mapElement.offsetWidth}, offsetHeight=${mapElement.offsetHeight}, rect=${Math.round(rect.width)}x${Math.round(rect.height)}`);
 
     // Ensure container has measurable layout dimensions to prevent layout locking loops
     mapElement.style.height = '100%';
@@ -3642,12 +3599,14 @@ window.initLeafletMapInstance = function () {
       return;
     }
 
+    console.log('[MAP-FREEZE 11] current map instance exists?:', Boolean(window.activeLeafletMap));
     // Teardown existing instance cleanly if present
     if (window.activeLeafletMap) {
+      console.log('[MAP-FREEZE 12] old map instance cleanup starting');
       try { window.activeLeafletMap.remove(); } catch (e) { }
       window.activeLeafletMap = null;
+      console.log('[MAP-FREEZE 12] old map instance cleanup finished');
     }
-    console.log('[MAP-FREEZE 05] previous map cleanup completed');
 
     // Inject Pulsing Bulb Keyframes
     if (!document.getElementById('map-bulb-glow-style')) {
@@ -3686,7 +3645,7 @@ window.initLeafletMapInstance = function () {
     ];
 
     console.log('[MAP-ACTUAL 08] L.map call starting');
-    console.log('[MAP-FREEZE 06] Leaflet creation starting');
+    console.log('[MAP-FREEZE 13] Leaflet constructor called');
     const map = L.map('map', {
       zoomControl: false,
       attributionControl: false,
@@ -3697,7 +3656,7 @@ window.initLeafletMapInstance = function () {
     map.fitBounds(sriLankaBounds, { padding: [10, 10] });
     window.activeLeafletMap = map;
     console.log('[MAP-ACTUAL 09] L.map call returned');
-    console.log('[MAP-FREEZE 07] Leaflet created');
+    console.log('[MAP-FREEZE 14] Leaflet constructor returns');
 
     window.resetMapToFrame = function () {
       if (window.activeLeafletMap) {
@@ -3716,6 +3675,7 @@ window.initLeafletMapInstance = function () {
     });
 
     tileLayer.addTo(map);
+    console.log('[MAP-FREEZE 15] tile/native map listeners attached');
 
     // Map click (panning/zooming/tapping background) - no auth gate for basic access
     map.on('click', function (e) {
@@ -3723,7 +3683,7 @@ window.initLeafletMapInstance = function () {
     });
 
     console.log('[MAP-ACTUAL 10] markers starting');
-    console.log('[MAP-FREEZE 08] markers starting');
+    console.log('[MAP-FREEZE 18] markers begin');
     // Detect and visually offset near-identical pins at low zoom levels
     try {
       const processedCoords = [];
@@ -3771,12 +3731,14 @@ window.initLeafletMapInstance = function () {
       console.warn("Non-critical pin error:", pinErr);
     }
     console.log('[MAP-ACTUAL 11] markers completed');
-    console.log('[MAP-FREEZE 09] markers completed');
+    console.log('[MAP-FREEZE 19] markers finish');
 
     // Plot live GPS position with glowing bulb
     if (navigator.geolocation) {
+      console.log('[MAP-FREEZE 16] geolocation starts');
       navigator.geolocation.getCurrentPosition(
         (pos) => {
+          console.log('[MAP-FREEZE 17] geolocation resolves');
           const userIcon = L.divIcon({
             className: 'user-pin-wrapper',
             html: `<div class="live-user-glowing-bulb"></div>`,
@@ -3785,7 +3747,9 @@ window.initLeafletMapInstance = function () {
           });
           L.marker([pos.coords.latitude, pos.coords.longitude], { icon: userIcon, zIndexOffset: 100, interactive: false }).addTo(map).bindPopup("<b>You Are Here</b>");
         },
-        () => { },
+        (geoErr) => {
+          console.log('[MAP-FREEZE 17] geolocation rejects/fails:', geoErr?.message);
+        },
         { enableHighAccuracy: true, timeout: 5000 }
       );
     }
@@ -3796,7 +3760,7 @@ window.initLeafletMapInstance = function () {
       }
     }, 150);
     console.log('[MAP-ACTUAL 12] map init returned');
-    console.log('[MAP-FREEZE 10] map initialization returned');
+    console.log('[MAP-FREEZE 20] post-map-render completes');
 
   } catch (mapErr) {
     console.error("Critical map wrapper exception caught safely:", mapErr);
@@ -6706,21 +6670,19 @@ window.handleDirectorySearch = function (event) {
 // SLIDE-UP PREVIEW DRAWER & DIRECTORY GRID RENDERER
 // ============================================================================
 window.openSitePreview = function (siteId) {
+  console.log('[SITE-FREEZE HANDLER A - openSitePreview] entered siteId:', siteId);
   if (window.__siteTapCounters) {
     window.__siteTapCounters.openSitePreview++;
     console.log('[SITE-TAP-COUNT]', JSON.stringify(window.__siteTapCounters));
   }
   console.log('[SITE-ACTUAL 01] physical site-card click received:', siteId);
-  console.log('[SITE-ACTUAL 02] exact handler name: openSitePreview');
-  console.log('[SITE-ACTUAL 04] openSitePreview entered:', siteId);
-  console.log('[SITE-FREEZE 01] site-card tap:', siteId);
+  console.log('[SITE-FREEZE 04] raw site ID:', siteId);
   const currentUser = window.state?.user || JSON.parse(localStorage.getItem('yathralanka_current_user') || 'null');
   const isGuest = !currentUser || !currentUser.emailVerified || window.state?.isGuest;
 
-  // Allow preview drawer to render for all explorers (guests & logged in users)
-
   const pool = window.sitesData || [];
   const cleanId = String(siteId).toLowerCase().replace(/[^a-z0-9]/g, '');
+  console.log('[SITE-FREEZE 05] normalized site ID:', cleanId);
 
   // Robust fuzzy matching against id, name, and alternate keys
   const site = pool.find(s => {
@@ -6733,16 +6695,18 @@ window.openSitePreview = function (siteId) {
       (cleanId.includes('museum') && sid.includes('museum'));
   }) || (typeof getDirectoryDataset === 'function' ? getDirectoryDataset().find(d => String(d.id).toLowerCase().replace(/[^a-z0-9]/g, '') === cleanId) : null);
 
-  if (!site) return;
-  console.log('[SITE-ACTUAL 03] resolved site ID:', site.id || siteId);
-  console.log('[SITE-FREEZE 02] resolved site ID:', site.id || siteId);
-  console.log('[SITE-FREEZE 03] openSitePreview entered');
+  if (!site) {
+    console.warn('[SITE-FREEZE] no matching site found for:', siteId);
+    return;
+  }
+  console.log('[SITE-FREEZE 06] matched site object:', site.name || site.id);
+  console.log('[SITE-FREEZE 07] auth/guest gate result: isGuest=', isGuest);
+  console.log('[SITE-FREEZE 08] intended destination: site-preview-drawer');
 
   window.state.activeSite = site;
   window.state.selectedSite = site;
 
   document.querySelectorAll('#site-preview-drawer-backdrop').forEach(d => d.remove());
-  console.log('[SITE-FREEZE 04] old preview cleanup completed');
 
   const chassis = document.querySelector('.screen-viewport') ||
     document.getElementById('screen-viewport') ||
@@ -6750,7 +6714,6 @@ window.openSitePreview = function (siteId) {
     document.querySelector('.app-viewport') ||
     document.body;
 
-  console.log('[SITE-ACTUAL 07] preview DOM creation started');
   const backdrop = document.createElement('div');
   backdrop.id = 'site-preview-drawer-backdrop';
   backdrop.style.cssText = `
@@ -6764,7 +6727,7 @@ window.openSitePreview = function (siteId) {
     if (e.target === backdrop) window.closeSitePreview();
   };
 
-  console.log('[SITE-FREEZE 05] backdrop created');
+  console.log('[SITE-FREEZE 14] overlay/preview created');
   backdrop.innerHTML = `
     <div style="background: #FAF5E8; border-top-left-radius: 24px; border-top-right-radius: 24px; padding: 18px 18px 24px 18px; box-sizing: border-box; box-shadow: 0 -10px 30px rgba(0,0,0,0.3); border-top: 1.5px solid #DFCEAA; animation: slideUp 0.25s cubic-bezier(0.16, 1, 0.3, 1);">
       <div style="width: 44px; height: 5px; background: #CBD5E1; border-radius: 99px; margin: 0 auto 14px auto;"></div>
@@ -6783,7 +6746,7 @@ window.openSitePreview = function (siteId) {
         ${site.description ? site.description.substring(0, 130) + '...' : 'Explore historical architecture, sacred grounds, and cultural archives.'}
       </p>
       <button 
-        onclick="console.log('[DETAIL-TRACE 01] full-landmark button clicked'); console.log('[DETAIL-TRACE 02] site id:', '${site.id}'); console.log('[DETAIL-TRACE 03] preview cleanup starting'); window.closeSitePreview(); console.log('[DETAIL-TRACE 04] preview cleanup completed'); window.navigate('site-detail', { id: '${site.id}' });"
+        onclick="console.log('[DETAIL-TRACE 01] full-landmark button clicked'); window.closeSitePreview(); window.navigate('site-detail', { id: '${site.id}' });"
         style="width: 100%; background: #F5A623; color: #1E293B; font-size: 14px; font-weight: 800; border: none; padding: 12px; border-radius: 12px; cursor: pointer; box-shadow: 0 4px 14px rgba(245, 166, 35, 0.35); margin-bottom: 8px;">
         View Full Landmark & Quests →
       </button>
@@ -6796,15 +6759,12 @@ window.openSitePreview = function (siteId) {
   `;
 
   chassis.appendChild(backdrop);
-  console.log('[SITE-ACTUAL 08] preview DOM inserted');
-  console.log('[SITE-FREEZE 06] drawer inserted');
+  console.log('[SITE-FREEZE 15] overlay inserted & visible');
+  console.log('[SITE-FREEZE 16] pointer-events state:', window.getComputedStyle(backdrop).pointerEvents);
   if (typeof window.updateGlobalFooterVisibility === 'function') {
     window.updateGlobalFooterVisibility();
   }
-  console.log('[SITE-ACTUAL 09] footer update returned');
-  console.log('[SITE-FREEZE 07] footer visibility updated');
-  console.log('[SITE-ACTUAL 10] site handler returned');
-  console.log('[SITE-FREEZE 08] openSitePreview returned');
+  console.log('[SITE-FREEZE 17] openSitePreview returned');
 };
 
 window.closeSitePreview = function () {
@@ -11029,7 +10989,7 @@ window.attachDirectoryCardEvents = function () {
         card.dataset?.siteId ||
         card.dataset?.id;
 
-      console.log("🖱️ Card clicked directly! Site ID:", siteId);
+      console.log("[SITE-FREEZE HANDLER E - card.onclick] clicked siteId:", siteId);
       if (siteId) {
         window.selectAndOpenSite(siteId);
       }
@@ -11053,6 +11013,7 @@ function attachDirectoryEvents() {
         card.dataset?.siteId ||
         card.dataset?.id;
 
+      console.log("[SITE-FREEZE HANDLER F - directoryContainer click delegation] clicked siteId:", siteId);
       if (siteId && typeof window.selectAndOpenSite === 'function') {
         e.preventDefault();
         e.stopPropagation();
