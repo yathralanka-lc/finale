@@ -61,33 +61,59 @@ window.leaveMap = function () {
   if (window.activeLeafletMap) {
     try {
       window.activeLeafletMap.remove();
+      console.log('[MAP-LIFECYCLE] instance-destroyed');
     } catch (e) {
       console.warn("Notice tearing down active Leaflet map:", e);
     }
     window.activeLeafletMap = null;
     mapDestroyCount++;
-    console.log(`[MAP-LIFECYCLE] leaveMap: createCount=${mapCreateCount}, destroyCount=${mapDestroyCount}, activeInstanceCount=0, currentScreen=${window.state?.currentScreen}`);
+    const activeInstances = (window.activeLeafletMap ? 1 : 0);
+    console.log(`[MAP-LIFECYCLE] leaveMap: createCount=${mapCreateCount}, destroyCount=${mapDestroyCount}, activeInstanceCount=${activeInstances}, currentScreen=${window.state?.currentScreen}`);
+    console.log(`[MAP-LIFECYCLE] invariant activeInstances=${activeInstances}`);
   }
 };
 
 window.enterMap = function (params = {}) {
   const mapElement = document.getElementById('map') || document.getElementById('yathra-main-map');
-  if (window.activeLeafletMap && mapElement) {
-    console.log(`[MAP-LIFECYCLE] enterMap (existing instance): createCount=${mapCreateCount}, destroyCount=${mapDestroyCount}, activeInstanceCount=1, currentScreen=${window.state?.currentScreen}`);
-    setTimeout(() => {
-      if (window.activeLeafletMap && typeof window.activeLeafletMap.invalidateSize === 'function') {
-        window.activeLeafletMap.invalidateSize();
-      }
-    }, 100);
+  const isConnected = Boolean(mapElement?.isConnected);
+  console.log(`[MAP-LIFECYCLE] dom-mounted connected=${isConnected}`);
+
+  if (!mapElement || !isConnected) {
+    console.warn('[MAP-LIFECYCLE] map container element #map not yet connected to DOM');
     return;
   }
 
+  if (window.activeLeafletMap) {
+    console.log('[MAP-LIFECYCLE] destroying previous map instance attached before re-creating');
+    window.leaveMap();
+  }
+
   mapCreateCount++;
-  console.log(`[MAP-LIFECYCLE] enterMap (creating new instance): createCount=${mapCreateCount}, destroyCount=${mapDestroyCount}, activeInstanceCount=1, currentScreen=${window.state?.currentScreen}`);
+  console.log('[MAP-LIFECYCLE] instance-created');
+  const activeInstances = 1;
+  console.log(`[MAP-LIFECYCLE] enterMap: createCount=${mapCreateCount}, destroyCount=${mapDestroyCount}, activeInstanceCount=${activeInstances}, currentScreen=${window.state?.currentScreen}`);
+  console.log(`[MAP-LIFECYCLE] invariant activeInstances=${activeInstances}`);
 
   if (typeof window.initLeafletMapInstance === 'function') {
     window.initLeafletMapInstance();
   }
+};
+
+window.resolveSiteFromId = function (siteId) {
+  if (!siteId && siteId !== 0) return null;
+  const pool = window.sitesData || (typeof sitesData !== 'undefined' ? sitesData : []);
+  const dirData = typeof getDirectoryDataset === 'function' ? getDirectoryDataset() : [];
+  const rawList = Array.isArray(pool) ? pool : Object.values(pool);
+  const combined = [...rawList, ...dirData];
+  const cleanId = String(siteId).toLowerCase().replace(/[-_]/g, '');
+
+  return combined.find(s => {
+    if (!s) return false;
+    const sid = String(s.id || '').toLowerCase().replace(/[-_]/g, '');
+    const sslug = String(s.slug || '').toLowerCase().replace(/[-_]/g, '');
+    const sname = String(s.name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    return sid === cleanId || sslug === cleanId || sname.includes(cleanId) || cleanId.includes(sid);
+  }) || null;
 };
 
 // Environment Detection for Mobile & Native Android Fullscreen Layouts
@@ -2979,22 +3005,6 @@ window.executeAppNavigation = function (targetScreen, params = {}) {
       window.gpsWatchId = null;
     }
 
-    // Handle site selection if passed in params
-    if (params && params.id) {
-      const pool = window.sitesData || (typeof sitesData !== 'undefined' ? sitesData : []);
-      const rawList = Array.isArray(pool) ? pool : Object.values(pool);
-      const targetId = String(params.id).toLowerCase().replace(/[-_]/g, '');
-      const foundSite = rawList.find(s => {
-        const sid = String(s.id || '').toLowerCase().replace(/[-_]/g, '');
-        const sname = String(s.name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-        return sid === targetId || sname.includes(targetId) || targetId.includes(sid);
-      });
-      if (foundSite) {
-        window.state.activeSite = foundSite;
-        window.state.selectedSite = foundSite;
-      }
-    }
-
     const appRoot = document.getElementById('app') ||
       document.getElementById('app-container') ||
       document.querySelector('.phone-screen') ||
@@ -3014,12 +3024,10 @@ window.executeAppNavigation = function (targetScreen, params = {}) {
 
     if (!viewport) return;
 
-    // Map lifecycle management
-    if (targetScreen === 'map' || targetScreen === 'wanderer') {
-      if (typeof window.enterMap === 'function') {
-        window.enterMap(params);
-      }
-    } else {
+    // MAP INITIALIZATION ORDER (Step 4 Requirement 2):
+    // a. Teardown previous map before replacing DOM
+    console.log('[MAP-LIFECYCLE] before-render');
+    if (targetScreen !== 'map' && targetScreen !== 'wanderer') {
       if (typeof window.leaveMap === 'function') {
         window.leaveMap();
       }
@@ -3102,7 +3110,39 @@ window.executeAppNavigation = function (targetScreen, params = {}) {
       case 'site-detail':
       case 'site_preview':
       case 'site-details':
-        htmlContent = typeof renderSiteDetail === 'function' ? renderSiteDetail(window.state.activeSite) : '<div>Site loading...</div>';
+        {
+          const reqId = params?.id || params?.siteId || window.state?.activeSite?.id || null;
+          console.log(`[SITE-NAV] requestedId=${reqId}`);
+
+          // Ensure preview drawer is removed before site detail rendering
+          document.querySelectorAll('#site-preview-drawer-backdrop, .site-preview-drawer-backdrop').forEach(el => el.remove());
+          if (window.state) window.state.overlay = null;
+
+          const resolvedSite = (typeof window.resolveSiteFromId === 'function' ? window.resolveSiteFromId(reqId) : null) || window.state?.activeSite || null;
+          console.log(`[SITE-NAV] resolvedId=${resolvedSite ? resolvedSite.id : null}`);
+
+          if (resolvedSite) {
+            window.state.activeSite = resolvedSite;
+            window.state.selectedSite = resolvedSite;
+            console.log('[SITE-NAV] detail-render-start');
+            htmlContent = typeof renderSiteDetail === 'function' ? renderSiteDetail(resolvedSite) : '<div>Site details loading...</div>';
+            setTimeout(() => { console.log('[SITE-NAV] detail-render-complete'); }, 0);
+          } else {
+            console.error(`[SITE-NAV] FAILED to resolve site for requestedId=${reqId}`);
+            window.state.activeSite = null;
+            window.state.selectedSite = null;
+            htmlContent = `
+              <div class="screen" style="padding: 24px; text-align: center; color: #1E293B; background: #FAF5E8; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; box-sizing: border-box;">
+                <div style="font-size: 38px; margin-bottom: 8px;">🏛️</div>
+                <h3 style="font-size: 18px; font-weight: 800; color: #0B5A68; margin-bottom: 6px;">Landmark Not Found</h3>
+                <p style="font-size: 12.5px; color: #64748B; margin-bottom: 18px; line-height: 1.45;">The requested site record "${reqId || 'unknown'}" could not be resolved from the directory dataset.</p>
+                <button onclick="window.executeAppNavigation('directory')" style="background: #0B5A68; color: #FFFFFF; border: none; border-radius: 11px; padding: 11px 20px; font-weight: 800; font-size: 13px; cursor: pointer; box-shadow: 0 4px 12px rgba(11,90,104,0.3);">
+                  Back to Directory →
+                </button>
+              </div>
+            `;
+          }
+        }
         break;
 
       case 'dwell-time':
@@ -3217,8 +3257,26 @@ window.executeAppNavigation = function (targetScreen, params = {}) {
         htmlContent = typeof renderDashboard === 'function' ? renderDashboard() : '<div>Home</div>';
     }
 
+    // Assign DOM HTML to screen viewport
     viewport.innerHTML = htmlContent;
     viewport.scrollTop = 0;
+
+    // MAP INITIALIZATION ORDER (Step 4 Requirement 2):
+    // e. Call enterMap() after DOM is assigned and #map is connected
+    if (targetScreen === 'map' || targetScreen === 'wanderer') {
+      requestAnimationFrame(() => {
+        if (typeof window.enterMap === 'function') {
+          window.enterMap(params);
+        }
+      });
+    }
+
+    // AUTH UI VERIFICATION CHECK (Step 4 Requirement 1)
+    if (targetScreen === 'auth' || targetScreen === 'login' || targetScreen === 'signup') {
+      const outerWrappers = document.querySelectorAll('.auth-screen-container').length;
+      const backButtons = document.querySelectorAll('#login-back, #signup-back, #btn-auth-back').length;
+      console.log(`[AUTH-UI] outerWrappers=${outerWrappers} backButtons=${backButtons}`);
+    }
 
     // Primary Navigation Screens showing Global Bottom Nav
     const primaryNavScreens = ['home', 'dashboard', 'activism', 'rewards', 'profile'];
@@ -3499,11 +3557,6 @@ function renderMapScreen(params = {}) {
 
     </div>
   `;
-
-  console.log('[MAP-FREEZE 03] map DOM created');
-  setTimeout(() => {
-    initLeafletMapInstance();
-  }, 50);
 
   return html;
 }
@@ -5914,27 +5967,19 @@ function renderSplash() {
 }
 
 function renderLogin() {
-  state.authTab = 'signin';
-  return `
-    <div class="screen auth-screen-container" id="login-view">
-      <div style="position: absolute; top: 16px; left: 16px; z-index: 10;">
-        <button class="back-button" id="login-back">←</button>
-      </div>
-      ${renderAuthCard('signin')}
-    </div>
-  `;
+  if (!window.state) window.state = {};
+  window.state.authTab = 'signin';
+  window.state.authActiveTab = 'signin';
+  window.state.authOrigin = null;
+  return renderAuthCard('signin');
 }
 
 function renderSignUp() {
-  state.authTab = 'signup';
-  return `
-    <div class="screen auth-screen-container" id="signup-view">
-      <div style="position: absolute; top: 16px; left: 16px; z-index: 10;">
-        <button class="back-button" id="signup-back">←</button>
-      </div>
-      ${renderAuthCard('signup')}
-    </div>
-  `;
+  if (!window.state) window.state = {};
+  window.state.authTab = 'signup';
+  window.state.authActiveTab = 'signup';
+  window.state.authOrigin = null;
+  return renderAuthCard('signup');
 }
 
 function renderPermissions() {
