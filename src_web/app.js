@@ -48,224 +48,47 @@ console.log = function (...args) {
   } catch (e) {}
 };
 
-window.__siteTapCounters = {
-  handleSiteCardClick: 0,
-  openSitePreview: 0,
-  selectAndOpenSite: 0,
-  showProximityGateModal: 0,
-  navigate: 0,
-  executeAppNavigation: 0
+window.__navCounters = {
+  authoritativeRouterCalls: 0,
+  legacyRouterCalls: 0,
+  renderCalls: 0
 };
 
-// --- STEP 2B: COMPREHENSIVE POST-PREVIEW HIT-TEST & DOM DUMP ---
-window.__dumpPostPreviewState = function(label = 'POSTPREVIEW-DUMP') {
-  try {
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    const cx = Math.floor(vw / 2);
-    const cy = Math.floor(vh / 2);
+let mapCreateCount = 0;
+let mapDestroyCount = 0;
 
-    const backdrop = document.getElementById('site-preview-drawer-backdrop');
-    const cardEl = backdrop ? backdrop.querySelector('div') : null;
-    const closeBtn = backdrop ? backdrop.querySelector('span[onclick*="closeSitePreview"]') : null;
-    const ctaBtn = backdrop ? backdrop.querySelector('button[onclick*="site-detail"]') : null;
-    const homeNavBtn = document.querySelector('#global-bottom-nav [onclick*="home"]') || document.querySelector('[onclick*="home"]');
-
-    const getElemCenter = (el) => {
-      if (!el) return null;
-      const r = el.getBoundingClientRect();
-      return { x: Math.floor(r.left + r.width / 2), y: Math.floor(r.top + r.height / 2) };
-    };
-
-    const cardCenter = getElemCenter(cardEl);
-    const closeCenter = getElemCenter(closeBtn);
-    const ctaCenter = getElemCenter(ctaBtn);
-    const homeCenter = getElemCenter(homeNavBtn);
-
-    const hitTestPoints = [
-      { name: 'screen-center', x: cx, y: cy },
-      { name: 'card-center', x: cardCenter?.x, y: cardCenter?.y },
-      { name: 'close-btn-center', x: closeCenter?.x, y: closeCenter?.y },
-      { name: 'cta-btn-center', x: ctaCenter?.x, y: ctaCenter?.y },
-      { name: 'home-nav-center', x: homeCenter?.x, y: homeCenter?.y }
-    ];
-
-    const getParentChain = (el) => {
-      const chain = [];
-      let cur = el;
-      while (cur && cur !== document.body) {
-        chain.push(`${cur.tagName}${cur.id ? '#' + cur.id : ''}${cur.className ? '.' + String(cur.className).replace(/\s+/g, '.') : ''}`);
-        cur = cur.parentElement;
-      }
-      return chain.join(' > ');
-    };
-
-    const inspectElementAtPoint = (pt) => {
-      if (!pt.x || !pt.y || pt.x < 0 || pt.y < 0 || pt.x > vw || pt.y > vh) return null;
-      const el = document.elementFromPoint(pt.x, pt.y);
-      if (!el) return null;
-      const cs = window.getComputedStyle(el);
-      const rect = el.getBoundingClientRect();
-      return {
-        pointName: pt.name,
-        point: { x: pt.x, y: pt.y },
-        tagName: el.tagName,
-        id: el.id,
-        className: el.className,
-        zIndex: cs.zIndex,
-        position: cs.position,
-        pointerEvents: cs.pointerEvents,
-        display: cs.display,
-        visibility: cs.visibility,
-        opacity: cs.opacity,
-        rect: { top: Math.round(rect.top), left: Math.round(rect.left), width: Math.round(rect.width), height: Math.round(rect.height) },
-        parentChain: getParentChain(el)
-      };
-    };
-
-    const hitResults = hitTestPoints.map(inspectElementAtPoint).filter(Boolean);
-
-    // Enumerate ALL fixed/absolute elements
-    const allEls = Array.from(document.querySelectorAll('*'));
-    const positioned = [];
-    const coveringOver50 = [];
-    const coveringOver80 = [];
-    const totalArea = vw * vh;
-
-    allEls.forEach(el => {
-      const cs = window.getComputedStyle(el);
-      if (cs.position === 'fixed' || cs.position === 'absolute') {
-        const zIndex = parseInt(cs.zIndex, 10) || 0;
-        const rect = el.getBoundingClientRect();
-        const area = rect.width * rect.height;
-        const info = {
-          tagName: el.tagName, id: el.id, className: el.className,
-          zIndex: cs.zIndex, position: cs.position, pointerEvents: cs.pointerEvents,
-          display: cs.display, visibility: cs.visibility, opacity: cs.opacity,
-          rect: { top: Math.round(rect.top), left: Math.round(rect.left), width: Math.round(rect.width), height: Math.round(rect.height) }
-        };
-
-        if (area > 0.5 * totalArea && cs.display !== 'none' && cs.visibility !== 'hidden') {
-          coveringOver50.push(info);
-        }
-        if (area > 0.8 * totalArea && cs.display !== 'none' && cs.visibility !== 'hidden') {
-          coveringOver80.push(info);
-        }
-        if (zIndex > 0 || cs.position === 'fixed') {
-          positioned.push(info);
-        }
-      }
-    });
-
-    positioned.sort((a, b) => (parseInt(b.zIndex, 10) || 0) - (parseInt(a.zIndex, 10) || 0));
-
-    const inspectSpecificEl = (el, name) => {
-      if (!el) return { name, exists: false };
-      const cs = window.getComputedStyle(el);
-      const rect = el.getBoundingClientRect();
-      return {
-        name,
-        exists: true,
-        isConnected: el.isConnected,
-        rect: { top: Math.round(rect.top), left: Math.round(rect.left), width: Math.round(rect.width), height: Math.round(rect.height) },
-        pointerEvents: cs.pointerEvents,
-        zIndex: cs.zIndex,
-        display: cs.display,
-        visibility: cs.visibility,
-        opacity: cs.opacity,
-        datasetDebugInstance: el.dataset?.debugInstance || null
-      };
-    };
-
-    const exactPreviewEls = [
-      inspectSpecificEl(backdrop, '#site-preview-drawer-backdrop'),
-      inspectSpecificEl(cardEl, 'preview-drawer-card'),
-      inspectSpecificEl(closeBtn, 'preview-close-btn'),
-      inspectSpecificEl(ctaBtn, 'preview-cta-btn')
-    ];
-
-    const dump = {
-      label,
-      timestamp: Date.now(),
-      hitResults,
-      top10Positioned: positioned.slice(0, 10),
-      coveringOver50Percent: coveringOver50,
-      coveringOver80Percent: coveringOver80,
-      exactPreviewElements: exactPreviewEls
-    };
-
-    origConsoleLog(`[SITE-POSTPREVIEW-DUMP] ${label}:`, JSON.stringify(dump));
-    return dump;
-  } catch (err) {
-    origConsoleLog('[SITE-POSTPREVIEW-DUMP-ERR]', err);
+window.leaveMap = function () {
+  if (window.activeLeafletMap) {
+    try {
+      window.activeLeafletMap.remove();
+    } catch (e) {
+      console.warn("Notice tearing down active Leaflet map:", e);
+    }
+    window.activeLeafletMap = null;
+    mapDestroyCount++;
+    console.log(`[MAP-LIFECYCLE] leaveMap: createCount=${mapCreateCount}, destroyCount=${mapDestroyCount}, activeInstanceCount=0, currentScreen=${window.state?.currentScreen}`);
   }
 };
 
-window.__dumpMapFrozenState = function() {
-  try {
-    const cx = Math.floor(window.innerWidth / 2);
-    const cy = Math.floor(window.innerHeight / 2);
-    const topEl = document.elementFromPoint(cx, cy);
-    const mapEl = document.getElementById('map');
-    const csMap = mapEl ? window.getComputedStyle(mapEl) : null;
-    const rectMap = mapEl ? mapEl.getBoundingClientRect() : null;
-
-    const allEls = Array.from(document.querySelectorAll('*'));
-    const bigOverlays = [];
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-
-    allEls.forEach(el => {
-      const cs = window.getComputedStyle(el);
-      const rect = el.getBoundingClientRect();
-      if ((cs.position === 'fixed' || cs.position === 'absolute') && (rect.width * rect.height > 0.8 * vw * vh) && cs.display !== 'none' && cs.visibility !== 'hidden') {
-        bigOverlays.push({ tagName: el.tagName, id: el.id, className: el.className, zIndex: cs.zIndex, pointerEvents: cs.pointerEvents });
+window.enterMap = function (params = {}) {
+  const mapElement = document.getElementById('map') || document.getElementById('yathra-main-map');
+  if (window.activeLeafletMap && mapElement) {
+    console.log(`[MAP-LIFECYCLE] enterMap (existing instance): createCount=${mapCreateCount}, destroyCount=${mapDestroyCount}, activeInstanceCount=1, currentScreen=${window.state?.currentScreen}`);
+    setTimeout(() => {
+      if (window.activeLeafletMap && typeof window.activeLeafletMap.invalidateSize === 'function') {
+        window.activeLeafletMap.invalidateSize();
       }
-    });
+    }, 100);
+    return;
+  }
 
-    const info = {
-      label: 'MAP-ACTUAL-FROZEN-STATE',
-      timestamp: Date.now(),
-      currentScreen: window.state?.currentScreen,
-      centerElement: { tagName: topEl?.tagName, id: topEl?.id, className: topEl?.className },
-      bigOverlays,
-      leafletInstanceCount: (window.activeLeafletMap ? 1 : 0) + (window.yathraMapInstance ? 1 : 0),
-      mapContainerConnected: Boolean(mapEl?.isConnected),
-      mapContainerDimensions: rectMap ? { width: Math.round(rectMap.width), height: Math.round(rectMap.height) } : null,
-      mapPointerEvents: csMap?.pointerEvents
-    };
-    origConsoleLog('[MAP-ACTUAL-FROZEN-STATE]', JSON.stringify(info));
-    return info;
-  } catch (err) {
-    origConsoleLog('[MAP-ACTUAL-FROZEN-STATE-ERR]', err);
+  mapCreateCount++;
+  console.log(`[MAP-LIFECYCLE] enterMap (creating new instance): createCount=${mapCreateCount}, destroyCount=${mapDestroyCount}, activeInstanceCount=1, currentScreen=${window.state?.currentScreen}`);
+
+  if (typeof window.initLeafletMapInstance === 'function') {
+    window.initLeafletMapInstance();
   }
 };
-
-window.__freezeProbe = function(label) {
-  return window.__dumpPostPreviewState(label);
-};
-
-window.__dumpFreezeState = function () {
-  return window.__dumpPostPreviewState('STATE-DUMP');
-};
-
-// --- STEP 2B: TOUCH TRACING IN CAPTURE & BUBBLE PHASES AFTER PREVIEW EXISTS ---
-['pointerdown', 'pointerup', 'click', 'touchstart', 'touchend'].forEach(evtName => {
-  document.addEventListener(evtName, (e) => {
-    try {
-      const backdropExists = Boolean(document.getElementById('site-preview-drawer-backdrop'));
-      const composedPathStr = e.composedPath ? e.composedPath().slice(0, 5).map(el => el.tagName ? `${el.tagName}${el.id ? '#' + el.id : ''}${el.className ? '.' + String(el.className).replace(/\s+/g, '.') : ''}` : String(el)).join(' > ') : 'N/A';
-      console.log(`[SITE-POST CAPTURE] type:${e.type} target:${e.target?.tagName}#${e.target?.id || ''}.${e.target?.className || ''} pos:(${Math.round(e.clientX || 0)},${Math.round(e.clientY || 0)}) screen:${window.state?.currentScreen} previewExists:${backdropExists} defPrev:${e.defaultPrevented} cancelBbl:${e.cancelBubble} path:${composedPathStr}`);
-    } catch (err) {}
-  }, true);
-
-  document.addEventListener(evtName, (e) => {
-    try {
-      const backdropExists = Boolean(document.getElementById('site-preview-drawer-backdrop'));
-      console.log(`[SITE-POST BUBBLE] type:${e.type} target:${e.target?.tagName}#${e.target?.id || ''}.${e.target?.className || ''} screen:${window.state?.currentScreen} previewExists:${backdropExists}`);
-    } catch (err) {}
-  }, false);
-});
 
 // Environment Detection for Mobile & Native Android Fullscreen Layouts
 (function initNativeEnvironmentClasses() {
@@ -3117,25 +2940,26 @@ window.handleSignOut = function () {
 // --- BULLETPROOF ROUTER EXECUTION & MAP THREAD UNLOCKER ---
 window.executeAppNavigation = function (targetScreen, params = {}) {
   try {
-    if (targetScreen === 'map' || targetScreen === 'wanderer') {
-      console.log('[MAP-FREEZE 03] navigate("map") requested');
-    } else if (targetScreen === 'site-detail' || targetScreen === 'site_preview') {
-      console.log('[SITE-FREEZE 09] navigation to site-detail requested');
-    }
-
-    if (window.__siteTapCounters) {
-      window.__siteTapCounters.executeAppNavigation++;
-      window.__siteTapCounters.navigate++;
-    }
-    console.log(`[ROUTER 01] [MAP-FREEZE 04] [SITE-FREEZE 10] router entered target=${targetScreen}, currentScreen before=${window.state?.currentScreen}`);
-
     if (!window.state) window.state = {};
     const screenBefore = window.state.currentScreen;
     window.state.isAuthenticating = false;
     window.state.currentScreen = targetScreen;
     window.state.currentParams = params;
+    window.state.overlay = null;
 
-    console.log(`[ROUTER 04] [MAP-FREEZE 05] [MAP-FREEZE 06] [SITE-FREEZE 11] currentScreen assigned before=${screenBefore}, after=${window.state?.currentScreen}`);
+    if (window.__navCounters) {
+      window.__navCounters.authoritativeRouterCalls++;
+      window.__navCounters.renderCalls++;
+    }
+
+    console.log(`[NAV] transition start: requested=${targetScreen}, before=${screenBefore}, currentScreen=${window.state?.currentScreen}`);
+    console.log('[NAV-COUNT]', JSON.stringify({
+      source: `tap:${targetScreen}`,
+      requestedTarget: targetScreen,
+      authoritativeRouterCalls: window.__navCounters?.authoritativeRouterCalls || 1,
+      legacyRouterCalls: window.__navCounters?.legacyRouterCalls || 0,
+      renderCalls: window.__navCounters?.renderCalls || 1
+    }));
 
     // Clean up any lingering overlays, modals, or backdrops across screen changes
     ['auth-loading-overlay', 'site-preview-drawer-backdrop', 'proximity-gate-modal-overlay', 'auth-required-modal-overlay', 'welcome-interception-modal', 'checkpoint-modal-overlay'].forEach(id => {
@@ -3190,9 +3014,15 @@ window.executeAppNavigation = function (targetScreen, params = {}) {
 
     if (!viewport) return;
 
-    if (window.activeLeafletMap && targetScreen !== 'map' && targetScreen !== 'wanderer') {
-      try { window.activeLeafletMap.remove(); } catch (e) { }
-      window.activeLeafletMap = null;
+    // Map lifecycle management
+    if (targetScreen === 'map' || targetScreen === 'wanderer') {
+      if (typeof window.enterMap === 'function') {
+        window.enterMap(params);
+      }
+    } else {
+      if (typeof window.leaveMap === 'function') {
+        window.leaveMap();
+      }
     }
 
     // Gated Side Quests Verification Dependency
@@ -3209,7 +3039,6 @@ window.executeAppNavigation = function (targetScreen, params = {}) {
       }
     }
 
-    console.log(`[ROUTER 06] [SITE-FREEZE 12] renderer entered for=${targetScreen}`);
     let htmlContent = '';
 
     switch (targetScreen) {
@@ -3390,8 +3219,6 @@ window.executeAppNavigation = function (targetScreen, params = {}) {
 
     viewport.innerHTML = htmlContent;
     viewport.scrollTop = 0;
-    console.log(`[ROUTER 07] [MAP-FREEZE 07] [SITE-FREEZE 13] DOM render completed for=${targetScreen}`);
-    console.log(`[ROUTER 08] currentScreen after render=${window.state?.currentScreen}`);
 
     // Primary Navigation Screens showing Global Bottom Nav
     const primaryNavScreens = ['home', 'dashboard', 'activism', 'rewards', 'profile'];
@@ -3415,23 +3242,7 @@ window.executeAppNavigation = function (targetScreen, params = {}) {
       try { attachEvents(); } catch (aeErr) { console.warn("attachEvents notice:", aeErr); }
     }
 
-    console.log(`[ROUTER 09] post-render events attached`);
-    console.log(`[ROUTER 10] [SITE-FREEZE 17] navigation returned target=${targetScreen}`);
-
-    // Immediately sync diagnostic banner with the newly rendered screen
-    if (typeof window.__dumpFreezeState === 'function') {
-      window.__dumpFreezeState();
-    }
-
-    // If entering map screen, safely trigger Leaflet size recalculation without duplicate map instantiation
-    if (targetScreen === 'map' || targetScreen === 'wanderer') {
-      setTimeout(() => {
-        if (window.activeLeafletMap && typeof window.activeLeafletMap.invalidateSize === 'function') {
-          window.activeLeafletMap.invalidateSize();
-        }
-      }, 100);
-    }
-
+    console.log(`[NAV] transition end: rendered targetScreen=${targetScreen}`);
   } catch (navErr) {
     console.error("Critical navigation error caught safely:", navErr);
   }
@@ -4231,12 +4042,12 @@ function requireAuth(actionType, callback, siteId = null, payload = null) {
 // ONE-TAP DIRECT GOOGLE AUTHENTICATION & ACCOUNT SELECTOR PROMPT
 // ============================================================================
 window.handleGoogleSignInClick = async function () {
-  console.log("[AUTH-ACTUAL 01] Google button clicked");
-  console.log("auth.currentUser before Google button:", auth?.currentUser ? auth.currentUser.uid : "null");
-  
+  console.log("[AUTH-GOOGLE 01] tap");
+  console.log("[AUTH-GOOGLE] currentUser before:", auth?.currentUser ? auth.currentUser.uid : "null");
+
   if (!window.state) window.state = {};
   window.state.isAuthenticating = true;
-  
+
   document.querySelectorAll('#auth-loading-overlay').forEach(el => el.remove());
 
   const loader = document.createElement('div');
@@ -4252,88 +4063,80 @@ window.handleGoogleSignInClick = async function () {
 
   try {
     const isNative = Boolean(window.Capacitor?.isNativePlatform && window.Capacitor.isNativePlatform());
+    console.log(`[AUTH-GOOGLE 02] platform chosen: ${isNative ? 'native' : 'web'}`);
+
     if (isNative) {
-      console.log("[AUTH-ACTUAL 02] native platform confirmed");
-      
       if (typeof GoogleAuth !== 'undefined' && typeof GoogleAuth.initialize === 'function') {
-        console.log("[AUTH-ACTUAL 03] GoogleAuth.initialize entered");
+        console.log("[AUTH-GOOGLE 03] Google provider initialized (GoogleAuth.initialize)");
         await GoogleAuth.initialize({
           clientId: '1032179534120-ttht7fjohqbvdrjurvjnudnr9ebggfp8.apps.googleusercontent.com',
           scopes: ['profile', 'email'],
           grantOfflineAccess: false
         });
-        console.log("[AUTH-ACTUAL 04] GoogleAuth.initialize returned");
       } else {
-        console.warn("[AUTH-ACTUAL WARNING] GoogleAuth object or initialize method unavailable");
+        console.warn("[AUTH-GOOGLE WARNING] GoogleAuth object or initialize method unavailable");
       }
-      
-      console.log("[AUTH-ACTUAL 05] GoogleAuth.signIn called");
-      
+
       let googleUser = null;
       try {
         googleUser = await GoogleAuth.signIn();
-        console.log("[AUTH-ACTUAL 06] GoogleAuth.signIn resolved");
       } catch (signInErr) {
-        console.error("[AUTH-ACTUAL ERROR] GoogleAuth.signIn rejected:", signInErr);
+        console.error("[AUTH-GOOGLE ERROR] GoogleAuth.signIn rejected:", signInErr);
         cleanup();
         if (typeof window.showNotification === 'function') {
           window.showNotification("Google Sign-In cancelled or unavailable.", "info");
         }
-        return; // STAY ON SIGN IN SCREEN, DO NOT NAVIGATE
+        return; // GUARD: STAY ON SIGN IN SCREEN
       }
 
-      const googleUserPresent = Boolean(googleUser);
-      console.log(`[AUTH-ACTUAL 07] googleUser present = ${googleUserPresent}`);
-
       if (!googleUser) {
-        console.error("[AUTH-ACTUAL ERROR] googleUser is null/undefined after sign-in");
+        console.error("[AUTH-GOOGLE ERROR] googleUser is null/undefined after sign-in");
         cleanup();
         if (typeof window.showNotification === 'function') {
           window.showNotification("Google Sign-In cancelled.", "info");
         }
-        return; // STAY ON SIGN IN SCREEN, DO NOT NAVIGATE
+        return; // GUARD: STAY ON SIGN IN SCREEN
       }
 
       const idToken = googleUser.authentication?.idToken || googleUser.idToken;
-      const idTokenPresent = Boolean(idToken);
-      console.log(`[AUTH-ACTUAL 08] idToken present = ${idTokenPresent}`);
+      console.log(`[AUTH-GOOGLE 04] token received: idTokenPresent=${Boolean(idToken)}`);
 
       if (!idToken) {
-        console.error("[AUTH-ACTUAL ERROR] No ID token returned from Google Auth bridge");
+        console.error("[AUTH-GOOGLE ERROR] No ID token returned from Google Auth bridge");
         cleanup();
         if (typeof window.showNotification === 'function') {
           window.showNotification("Google Sign-In failed: No security token returned.", "error");
         }
-        return; // STAY ON SIGN IN SCREEN, DO NOT NAVIGATE
+        return; // GUARD: STAY ON SIGN IN SCREEN
       }
 
-      console.log("[AUTH-ACTUAL 09] Firebase signInWithCredential starting");
+      console.log("[AUTH-GOOGLE 05] Firebase credential created");
+      const credential = GoogleAuthProvider.credential(idToken);
+
+      console.log("[AUTH-GOOGLE 06] signInWithCredential called");
       let credentialResult = null;
       try {
-        const credential = GoogleAuthProvider.credential(idToken);
         credentialResult = await signInWithCredential(auth, credential);
-        console.log("[AUTH-ACTUAL 10] Firebase signInWithCredential succeeded");
       } catch (fbErr) {
-        console.error("[AUTH-ACTUAL ERROR] Firebase signInWithCredential failed:", fbErr);
+        console.error("[AUTH-GOOGLE ERROR] Firebase signInWithCredential failed:", fbErr);
         cleanup();
         if (typeof window.showNotification === 'function') {
           window.showNotification("Firebase authentication failed: " + fbErr.message, "error");
         }
-        return; // STAY ON SIGN IN SCREEN, DO NOT NAVIGATE
+        return; // GUARD: STAY ON SIGN IN SCREEN
       }
 
       const fbUser = auth?.currentUser || credentialResult?.user;
+      console.log(`[AUTH-GOOGLE 07] Firebase user returned: userUid=${fbUser?.uid || 'null'}`);
+
       if (!fbUser || !fbUser.uid) {
-        console.error("[AUTH-ACTUAL ERROR] Firebase currentUser is null after credential exchange");
+        console.error("[AUTH-GOOGLE GUARD PREVENTED ROUTING] Firebase currentUser is null after credential exchange");
         cleanup();
         if (typeof window.showNotification === 'function') {
           window.showNotification("Firebase user session could not be established.", "error");
         }
-        return; // STAY ON SIGN IN SCREEN, DO NOT NAVIGATE
+        return; // GUARD: STAY ON SIGN IN SCREEN
       }
-
-      console.log(`[AUTH-ACTUAL 11] Firebase currentUser UID = ${fbUser.uid}`);
-      console.log("[AUTH-ACTUAL 12] handleGoogleSignInSuccess entered");
 
       const userSession = {
         uid: fbUser.uid,
@@ -4355,48 +4158,42 @@ window.handleGoogleSignInClick = async function () {
         window.state.isLoggedIn = true;
       }
 
-      console.log("[AUTH-ACTUAL 13] navigating to home");
+      console.log("[AUTH-GOOGLE 08] router to home");
       cleanup();
       if (typeof window.executeAppNavigation === 'function') {
         window.executeAppNavigation('home');
-      } else {
-        window.navigate('home');
       }
       return;
     } else {
       // WEB PLATFORM FLOW
-      console.log("[AUTH-ACTUAL 02] web platform confirmed");
-      console.log("[AUTH-ACTUAL 05] web signInWithPopup called");
-      
+      console.log("[AUTH-GOOGLE 03] Google provider initialized (GoogleAuthProvider)");
       const provider = new GoogleAuthProvider();
       provider.setCustomParameters({ prompt: 'select_account' });
-      
+
+      console.log("[AUTH-GOOGLE 06] web signInWithPopup called");
       let result = null;
       try {
         result = await signInWithPopup(auth, provider);
-        console.log("[AUTH-ACTUAL 06] web signInWithPopup resolved");
       } catch (popupErr) {
-        console.error("[AUTH-ACTUAL ERROR] web signInWithPopup failed:", popupErr);
+        console.error("[AUTH-GOOGLE ERROR] web signInWithPopup failed:", popupErr);
         cleanup();
         if (typeof window.showNotification === 'function') {
           window.showNotification("Google Sign-In popup cancelled or blocked.", "info");
         }
-        return; // STAY ON SIGN IN SCREEN, DO NOT NAVIGATE
+        return; // GUARD: STAY ON SIGN IN SCREEN
       }
 
       const fbUser = result?.user || auth?.currentUser;
+      console.log(`[AUTH-GOOGLE 07] Firebase user returned: userUid=${fbUser?.uid || 'null'}`);
+
       if (!fbUser || !fbUser.uid) {
-        console.error("[AUTH-ACTUAL ERROR] Web Google Sign-In returned no valid Firebase user");
+        console.error("[AUTH-GOOGLE GUARD PREVENTED ROUTING] Web Google Sign-In returned no valid Firebase user");
         cleanup();
         if (typeof window.showNotification === 'function') {
           window.showNotification("Google Sign-In failed.", "error");
         }
-        return; // STAY ON SIGN IN SCREEN, DO NOT NAVIGATE
+        return; // GUARD: STAY ON SIGN IN SCREEN
       }
-
-      console.log("[AUTH-ACTUAL 10] Firebase web auth succeeded");
-      console.log(`[AUTH-ACTUAL 11] Firebase currentUser UID = ${fbUser.uid}`);
-      console.log("[AUTH-ACTUAL 12] handleGoogleSignInSuccess entered");
 
       const userSession = {
         uid: fbUser.uid,
@@ -4418,17 +4215,15 @@ window.handleGoogleSignInClick = async function () {
         window.state.isLoggedIn = true;
       }
 
-      console.log("[AUTH-ACTUAL 13] navigating to home");
+      console.log("[AUTH-GOOGLE 08] router to home");
       cleanup();
       if (typeof window.executeAppNavigation === 'function') {
         window.executeAppNavigation('home');
-      } else {
-        window.navigate('home');
       }
       return;
     }
   } catch (error) {
-    console.error("[AUTH-ACTUAL ERROR] Unhandled Google authentication error caught:", error);
+    console.error("[AUTH-GOOGLE ERROR] Unhandled Google authentication error caught:", error);
     cleanup();
     if (typeof window.showNotification === 'function') {
       window.showNotification("Google Sign-In unavailable.", "error");
@@ -6100,114 +5895,15 @@ function Maps(route, data) {
 }
 window.Maps = Maps;
 
-// --- SCREEN VIEWS & TEMPLATES ---
 function renderActiveScreen() {
-  try {
-    const container = document.getElementById('app-container');
-    if (!container) return;
-
-    let html = '';
-
-    switch (state.currentScreen) {
-      case 'landing': case 'splash': html = renderLanding(); break;
-      case 'login': html = renderLogin(); break;
-      case 'signup': html = renderSignUp(); break;
-      case 'permissions': html = renderPermissions(); break;
-      case 'choose-role': html = renderChooseRole(); break;
-      case 'calibrate-compass': html = renderCalibrateCompass(); break;
-      case 'how-scoring-works': html = renderHowScoring(); break;
-      case 'dashboard': html = renderDashboard(); break;
-      case 'directory': html = renderDirectory(); break;
-      case 'heritage-trail': html = renderTrailList('Heritage Trail'); break;
-      case 'hidden-gems': html = renderTrailList('Hidden Gems'); break;
-      case 'map': html = renderMap(); break;
-      case 'site-detail': html = renderSiteDetail(); break;
-      case 'dwell-time': html = renderDwellTime(); break;
-      case 'camera': html = renderCamera(); break;
-      case 'camera-success': html = renderCameraSuccess(); break;
-      case 'camera-reject': html = renderCameraReject(); break;
-      case 'guidelines': html = renderGuidelines(); break;
-      case 'offline-sync': html = renderOfflineSync(); break;
-      case 'quiz': html = renderQuiz(); break;
-      case 'quiz-cooldown': html = renderQuizCooldown(); break;
-      case 'quests': html = renderQuestsList(); break;
-      case 'quest-social': html = renderQuestSocial(); break;
-      case 'quest-food': html = renderQuestFood(); break;
-      case 'quest-wandering': html = renderQuestWandering(); break;
-      case 'quest-wildlife': html = renderQuestWildlife(); break;
-      case 'quest-warrior': html = renderQuestWarrior(); break;
-      case 'activism': html = renderActivismDashboard(); break;
-      case 'petition': html = renderPetitionPage(); break;
-      case 'donations': html = renderDonationsPage(); break;
-      case 'cleanup': html = renderCleanupPage(); break;
-      case 'create-event': html = renderCreateEventPage(); break;
-      case 'rewards': html = renderRewardsDashboard(); break;
-      case 'rewards-list': html = renderRewardsList(); break;
-      case 'coupon-redeem': html = renderCouponRedeem(); break;
-      case 'rank': html = renderRankScreen(); break;
-      case 'leaderboard': html = renderLeaderboard(); break;
-      case 'profile': html = renderProfile(); break;
-      case 'travel-poster': html = renderTravelPoster(); break;
-      case 'settings': html = renderSettings(); break;
-      case 'ledger': html = renderLedger(); break;
-      default: html = `<div>Screen frame missing</div>`;
-    }
-
-    const mapView = document.getElementById('map-view');
-
-    if (state.currentScreen !== 'map' && yathraMapInstance) {
-      const tempInstance = yathraMapInstance;
-      yathraMapInstance = null;
-      (async () => {
-        try {
-          await tempInstance.destroy();
-          console.log("Native map instance closed smoothly via memory controller.");
-        } catch (err) {
-          console.error("Error executing native interface cleanup execution mapping:", err);
-        }
-      })();
-    }
-
-    container.innerHTML = html;
-
-    if (state.currentScreen === 'map') {
-      container.style.display = 'block';
-      if (typeof initLeafletMap === 'function') {
-        initLeafletMap();
-      } else {
-        initializeYathraMap();
-      }
-    } else {
-      if (mapView) mapView.style.display = 'none';
-      container.style.display = 'block';
-      document.documentElement.classList.remove('map-active');
-      document.body.classList.remove('map-active');
-      document.documentElement.style.removeProperty('background');
-      document.documentElement.style.removeProperty('background-color');
-      document.body.style.setProperty('background', '#FDF8E9', 'important');
-      document.body.style.setProperty('background-color', '#FDF8E9', 'important');
-
-      const targets = ['#app', '.app-root', '#app-container', '.app-viewport', '.iphone-chassis', '.view-wrapper', '.screen', 'main'];
-      targets.forEach(sel => {
-        const el = document.querySelector(sel);
-        if (el) {
-          el.style.removeProperty('background');
-          el.style.removeProperty('background-color');
-        }
-      });
-    }
-
-    try { attachEvents(); } catch (ae) { console.warn("attachEvents notice in renderActiveScreen:", ae); }
-  } catch (err) {
-    console.error("Critical exception caught in renderActiveScreen:", err);
-    try {
-      const container = document.getElementById('app-container') || document.getElementById('app') || document.body;
-      if (container && typeof renderDashboard === 'function') {
-        container.innerHTML = renderDashboard();
-      }
-    } catch (e) { }
+  if (window.__navCounters) {
+    window.__navCounters.legacyRouterCalls++;
+  }
+  if (typeof window.executeAppNavigation === 'function') {
+    return window.executeAppNavigation(window.state?.currentScreen || 'home', window.state?.currentParams || {});
   }
 }
+window.renderActiveScreen = renderActiveScreen;
 
 function renderLanding() {
   return renderWelcomeScreen();
@@ -6805,21 +6501,10 @@ window.handleDirectorySearch = function (event) {
 // SLIDE-UP PREVIEW DRAWER & DIRECTORY GRID RENDERER
 // ============================================================================
 window.openSitePreview = function (siteId) {
-  console.log('[SITE-FREEZE HANDLER A - openSitePreview] entered siteId:', siteId);
-  if (window.__siteTapCounters) {
-    window.__siteTapCounters.openSitePreview++;
-    console.log('[SITE-TAP-COUNT]', JSON.stringify(window.__siteTapCounters));
-  }
-  console.log('[SITE-ACTUAL 01] physical site-card click received:', siteId);
-  console.log('[SITE-FREEZE 04] raw site ID:', siteId);
-  const currentUser = window.state?.user || JSON.parse(localStorage.getItem('yathralanka_current_user') || 'null');
-  const isGuest = !currentUser || !currentUser.emailVerified || window.state?.isGuest;
-
+  if (!window.state) window.state = {};
   const pool = window.sitesData || [];
   const cleanId = String(siteId).toLowerCase().replace(/[^a-z0-9]/g, '');
-  console.log('[SITE-FREEZE 05] normalized site ID:', cleanId);
 
-  // Robust fuzzy matching against id, name, and alternate keys
   const site = pool.find(s => {
     const sid = String(s.id || '').toLowerCase().replace(/[^a-z0-9]/g, '');
     const sname = String(s.name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -6830,38 +6515,21 @@ window.openSitePreview = function (siteId) {
       (cleanId.includes('museum') && sid.includes('museum'));
   }) || (typeof getDirectoryDataset === 'function' ? getDirectoryDataset().find(d => String(d.id).toLowerCase().replace(/[^a-z0-9]/g, '') === cleanId) : null);
 
-  if (!site) {
-    console.warn('[SITE-FREEZE] no matching site found for:', siteId);
-    return;
-  }
-  console.log('[SITE-FREEZE 06] matched site object:', site.name || site.id);
-  console.log('[SITE-FREEZE 07] auth/guest gate result: isGuest=', isGuest);
-  console.log('[SITE-FREEZE 08] intended destination: site-preview-drawer');
+  if (!site) return;
 
   window.state.activeSite = site;
   window.state.selectedSite = site;
+  window.state.overlay = { type: 'site-preview', siteId: site.id };
 
-  document.querySelectorAll('#site-preview-drawer-backdrop').forEach(d => d.remove());
+  document.querySelectorAll('#site-preview-drawer-backdrop, .site-preview-drawer-backdrop').forEach(d => d.remove());
 
   const chassis = document.querySelector('.screen-viewport') ||
     document.getElementById('screen-viewport') ||
-    document.querySelector('.iphone-chassis') ||
-    document.querySelector('.app-viewport') ||
     document.body;
 
   const backdrop = document.createElement('div');
   backdrop.id = 'site-preview-drawer-backdrop';
-  const instanceToken = 'preview-' + Date.now();
-  backdrop.dataset.debugInstance = instanceToken;
-  console.log('[SITE-PREVIEW IDENTITY TOKEN inserted]:', instanceToken);
-
-  [100, 500, 1500].forEach(delay => {
-    setTimeout(() => {
-      const el = document.getElementById('site-preview-drawer-backdrop');
-      console.log(`[SITE-PREVIEW IDENTITY TOKEN +${delay}ms]:`, el ? el.dataset?.debugInstance : 'ELEMENT REMOVED', 'isConnected:', Boolean(el?.isConnected));
-    }, delay);
-  });
-
+  backdrop.className = 'site-preview-drawer-backdrop';
   backdrop.style.cssText = `
     position: absolute; top: 0; left: 0; width: 100%; height: 100%;
     background: rgba(8, 43, 51, 0.55); backdrop-filter: blur(4px);
@@ -6870,12 +6538,9 @@ window.openSitePreview = function (siteId) {
   `;
 
   backdrop.onclick = function (e) {
-    console.log('[SITE-CONTROL backdrop ENTER]', 'target:', e.target?.tagName, 'id:', e.target?.id, 'class:', e.target?.className);
     if (e.target === backdrop) window.closeSitePreview();
-    console.log('[SITE-CONTROL backdrop EXIT]');
   };
 
-  console.log('[SITE-FREEZE 14] overlay/preview created');
   backdrop.innerHTML = `
     <div style="background: #FAF5E8; border-top-left-radius: 24px; border-top-right-radius: 24px; padding: 18px 18px 24px 18px; box-sizing: border-box; box-shadow: 0 -10px 30px rgba(0,0,0,0.3); border-top: 1.5px solid #DFCEAA; animation: slideUp 0.25s cubic-bezier(0.16, 1, 0.3, 1);">
       <div style="width: 44px; height: 5px; background: #CBD5E1; border-radius: 99px; margin: 0 auto 14px auto;"></div>
@@ -6894,57 +6559,31 @@ window.openSitePreview = function (siteId) {
         ${site.description ? site.description.substring(0, 130) + '...' : 'Explore historical architecture, sacred grounds, and cultural archives.'}
       </p>
       <button 
-        onclick="console.log('[SITE-CONTROL cta ENTER]', 'siteId:', '${site.id}'); window.closeSitePreview(); window.navigate('site-detail', { id: '${site.id}' }); console.log('[SITE-CONTROL cta EXIT]');"
+        onclick="window.closeSitePreview(); window.executeAppNavigation('site-detail', { id: '${site.id}' });"
         style="width: 100%; background: #F5A623; color: #1E293B; font-size: 14px; font-weight: 800; border: none; padding: 12px; border-radius: 12px; cursor: pointer; box-shadow: 0 4px 14px rgba(245, 166, 35, 0.35); margin-bottom: 8px;">
         View Full Landmark & Quests →
       </button>
       <div style="text-align: center;">
-        <span onclick="console.log('[SITE-CONTROL close ENTER]'); window.closeSitePreview(); console.log('[SITE-CONTROL close EXIT]');" style="font-size: 11.5px; font-weight: 700; color: #64748B; cursor: pointer;">
+        <span onclick="window.closeSitePreview();" style="font-size: 11.5px; font-weight: 700; color: #64748B; cursor: pointer;">
           Keep Exploring
         </span>
       </div>
     </div>
   `;
 
-  // Attach 3s MutationObserver
-  if (window._siteMutationObserver) {
-    try { window._siteMutationObserver.disconnect(); } catch (e) {}
-  }
-  const observer = new MutationObserver((mutations) => {
-    mutations.forEach(m => {
-      let removed = Array.from(m.removedNodes).map(n => n.id || n.className || n.tagName).join(', ');
-      let added = Array.from(m.addedNodes).map(n => n.id || n.className || n.tagName).join(', ');
-      if (removed.includes('preview') || added.includes('preview') || m.target.id === 'screen-viewport' || m.target.id === 'app') {
-        console.log(`[SITE-MUTATION] type:${m.type} target:${m.target.tagName}#${m.target.id}.${m.target.className} added:[${added}] removed:[${removed}]`);
-      }
-    });
-  });
-
   chassis.appendChild(backdrop);
-  observer.observe(chassis, { childList: true, subtree: true });
-  window._siteMutationObserver = observer;
-  setTimeout(() => { observer.disconnect(); }, 3000);
 
-  console.log('[SITE-FREEZE 15] overlay inserted & visible');
-  console.log('[SITE-FREEZE 16] pointer-events state:', window.getComputedStyle(backdrop).pointerEvents);
   if (typeof window.updateGlobalFooterVisibility === 'function') {
     window.updateGlobalFooterVisibility();
   }
-
-  // Dump exact post-preview hit-test state
-  if (typeof window.__dumpPostPreviewState === 'function') {
-    window.__dumpPostPreviewState('OPEN_SITE_PREVIEW_INSERTED');
-  }
-  console.log('[SITE-FREEZE 17] openSitePreview returned');
 };
 
 window.closeSitePreview = function () {
-  console.log('[SITE-CONTROL close ENTER]');
-  document.querySelectorAll('#site-preview-drawer-backdrop').forEach(drawer => drawer.remove());
+  document.querySelectorAll('#site-preview-drawer-backdrop, .site-preview-drawer-backdrop').forEach(drawer => drawer.remove());
+  if (window.state) window.state.overlay = null;
   if (typeof window.updateGlobalFooterVisibility === 'function') {
     window.updateGlobalFooterVisibility();
   }
-  console.log('[SITE-CONTROL close EXIT]');
 };
 
 window.renderDirectoryGrid = function () {
