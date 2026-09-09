@@ -208,6 +208,56 @@ function getSessionAccessState() {
 window.getSessionAccessState = getSessionAccessState;
 
 // ============================================================================
+// STABILIZATION STEP 6A.1: GOOGLE AUTH TRANSACTION MODEL & APPROVAL GATE
+// ============================================================================
+function completeVerifiedAuthentication({ attemptId, firebaseUser, userSession }) {
+  if (!window.state) window.state = {};
+  const attempt = window.state.authAttempt;
+
+  const v1 = Boolean(attempt && attempt.id === attemptId);
+  const v2 = Boolean(attempt && attempt.status === 'exchanging-credential');
+  const v3 = Boolean(firebaseUser);
+  const v4 = Boolean(firebaseUser && firebaseUser.uid);
+  const v5 = Boolean(typeof auth !== 'undefined' && auth && auth.currentUser);
+  const v6 = Boolean(auth && auth.currentUser && auth.currentUser.uid === firebaseUser?.uid);
+
+  if (!v1 || !v2 || !v3 || !v4 || !v5 || !v6) {
+    const reason = !v1 ? 'attempt_id_mismatch' : (!v2 ? `invalid_status_${attempt?.status}` : (!v3 || !v4 ? 'invalid_firebase_user' : 'uid_mismatch'));
+    console.log(`[AUTH-NAV] source=completeVerifiedAuthentication target=home outcome=blocked reason=${reason} attempt=${attemptId}`);
+    return false;
+  }
+
+  attempt.status = 'verified';
+  console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=verified`);
+  console.log(`[AUTH-NAV] source=completeVerifiedAuthentication target=home outcome=approved attempt=${attemptId}`);
+
+  localStorage.removeItem('yathralanka_session_mode');
+  localStorage.setItem('yathralanka_current_user', JSON.stringify(userSession));
+  localStorage.setItem('yathralanka_logged_in', 'true');
+
+  window.state.user = userSession;
+  window.state.currentUser = userSession;
+  window.state.isGuest = false;
+  window.state.isLoggedIn = true;
+
+  if (window.state.pendingAuthReturn) {
+    const pending = window.state.pendingAuthReturn;
+    window.state.pendingAuthReturn = null;
+    console.log(`[AUTH-RETURN] action=resume origin=${pending.originRoute}`);
+    if (typeof pending.onAuthorized === 'function') {
+      pending.onAuthorized();
+    } else if (typeof window.executeAppNavigation === 'function') {
+      window.executeAppNavigation(pending.originRoute, pending.originParams || {});
+    }
+  } else if (typeof window.executeAppNavigation === 'function') {
+    window.executeAppNavigation('home');
+  }
+
+  return true;
+}
+window.completeVerifiedAuthentication = completeVerifiedAuthentication;
+
+// ============================================================================
 // STABILIZATION STEP 6A: CENTRALIZED ACCESS CONTROL & UNIVERSAL GATE
 // ============================================================================
 const PROTECTED_CAPABILITIES = {
@@ -405,15 +455,38 @@ window.handleDashboardInteraction = function (actionRoute) {
   }
 };
 
-window.renderUniversalBackButton = function (destination, label = "← Back") {
+window.renderUniversalBackButton = function (destination = 'home', params = {}) {
+  const isAuth = destination === 'auth' || (window.state?.currentScreen === 'auth');
+  const strokeColor = isAuth ? '#FFFFFF' : '#1E293B';
+  const bgStyle = isAuth
+    ? 'background: rgba(255, 255, 255, 0.18); border: 1px solid rgba(255, 255, 255, 0.28); color: #FFFFFF;'
+    : 'background: rgba(255, 255, 255, 0.88); border: 1px solid rgba(0, 0, 0, 0.12); color: #1E293B;';
+
+  const onClickAction = isAuth
+    ? "window.handleAuthBackClick()"
+    : (typeof destination === 'string' ? `window.executeAppNavigation('${destination}')` : "window.executeAppNavigation('home')");
+
   return `
     <button 
-      type="button"
-      class="yathra-universal-back-btn"
-      onclick="window.navigate('${destination}')" 
-      style="display: inline-flex; align-items: center; gap: 4px; padding: 7px 14px; border-radius: 11px; border: 1.5px solid #CBD5E1; background: #FFFFFF; color: #1E293B; font-size: 12.5px; font-weight: 700; cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,0.05); transition: background 0.15s ease;">
-      ${label}
+      type="button" 
+      class="universal-top-right-back-btn" 
+      onclick="${onClickAction}" 
+      aria-label="Back" 
+      style="position: absolute; top: 14px; right: 14px; z-index: 500; min-width: 44px; min-height: 44px; width: 44px; height: 44px; border-radius: 12px; backdrop-filter: blur(8px); cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 12px rgba(0,0,0,0.12); ${bgStyle}">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="${strokeColor}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M19 12H5M12 19l-7-7 7-7"/>
+      </svg>
     </button>
+  `;
+};
+
+window.getGuestModeBadge = function () {
+  const session = typeof getSessionAccessState === 'function' ? getSessionAccessState() : { isGuest: true };
+  if (!session.isGuest) return '';
+  return `
+    <span class="guest-mode-badge" style="font-size: 11px; font-weight: 700; background: #F1F5F9; color: #475569; border: 1px solid #CBD5E1; padding: 3px 9px; border-radius: 12px; display: inline-flex; align-items: center; justify-content: center; margin-left: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); vertical-align: middle;">
+      Guest mode
+    </span>
   `;
 };
 
@@ -2511,54 +2584,76 @@ window.openAuthScreen = function (targetTab = 'signin') {
 };
 
 // 2. Direct Guest Bypass to Central Dashboard ('home')
-window.continueAsGuest = function (e) {
+window.continueAsGuest = async function (e) {
   if (e && typeof e.preventDefault === 'function') {
     e.preventDefault();
     e.stopPropagation();
   }
 
-  // 1. Establish explicit guest mode in localStorage
-  localStorage.setItem('yathralanka_session_mode', 'guest');
-  localStorage.removeItem('yathralanka_current_user');
-  localStorage.removeItem('yathralanka_active_user');
-  localStorage.removeItem('yathralanka_user');
-
-  // 2. Clear in-memory authenticated profile state
-  const guestUser = {
-    name: "Guest Explorer",
-    displayName: "Guest Explorer",
-    isGuest: true,
-    emailVerified: false,
-    xp: 0,
-    level: "Novice Explorer",
-    rank: "Novice Explorer",
-    dashboard_visits: 1
-  };
-
-  if (!window.state) window.state = {};
-  window.state.user = guestUser;
-  window.state.currentUser = guestUser;
-  window.state.isGuest = true;
-  window.state.isLoggedIn = false;
-  window.state.currentScreen = 'home';
-  window.state.currentParams = {};
-
-  // 3. Safely call Firebase signOut if Firebase session is active
-  if (typeof auth !== 'undefined' && auth.currentUser) {
-    console.log('[GUEST-ENTRY] firebaseSignOut=start');
-    signOut(auth).then(() => {
-      console.log('[GUEST-ENTRY] firebaseSignOut=success');
-    }).catch((err) => {
-      console.error('[GUEST-ENTRY] firebaseSignOut=failure', err);
-    });
+  if (window.__isEnteringGuestMode) {
+    console.log('[GUEST-ENTRY] tap ignored (entry already in progress)');
+    return;
   }
+  window.__isEnteringGuestMode = true;
 
-  // DO NOT call native GoogleAuth.signOut() in the guest-entry path
+  try {
+    // 1. If Firebase session is active, await signOut(auth) and confirm auth.currentUser === null
+    if (typeof auth !== 'undefined' && auth && auth.currentUser) {
+      console.log('[GUEST-ENTRY] firebaseSignOut=start');
+      try {
+        await signOut(auth);
+        if (auth.currentUser !== null) {
+          console.error('[GUEST-ENTRY] firebaseSignOut=failure (auth.currentUser not null)');
+          if (typeof window.showNotification === 'function') {
+            window.showNotification("Sign-out failed. Please try again.", "error");
+          }
+          return;
+        }
+        console.log('[GUEST-ENTRY] firebaseSignOut=success');
+      } catch (err) {
+        console.error('[GUEST-ENTRY] firebaseSignOut=failure', err);
+        if (typeof window.showNotification === 'function') {
+          window.showNotification("Sign-out failed. Please try again.", "error");
+        }
+        return;
+      }
+    }
 
-  if (typeof window.executeAppNavigation === 'function') {
-    window.executeAppNavigation('home');
-  } else if (typeof window.navigate === 'function') {
-    window.navigate('home');
+    // 2. Establish explicit guest mode in localStorage
+    localStorage.setItem('yathralanka_session_mode', 'guest');
+    localStorage.removeItem('yathralanka_current_user');
+    localStorage.removeItem('yathralanka_active_user');
+    localStorage.removeItem('yathralanka_user');
+
+    // 3. Clear in-memory authenticated profile state and create normalized Guest Explorer
+    const guestUser = {
+      name: "Guest Explorer",
+      displayName: "Guest Explorer",
+      isGuest: true,
+      emailVerified: false,
+      xp: 0,
+      level: "Novice Explorer",
+      rank: "Novice Explorer",
+      dashboard_visits: 1
+    };
+
+    if (!window.state) window.state = {};
+    window.state.user = guestUser;
+    window.state.currentUser = guestUser;
+    window.state.isGuest = true;
+    window.state.isLoggedIn = false;
+    window.state.currentScreen = 'home';
+    window.state.currentParams = {};
+
+    // DO NOT call native GoogleAuth.signOut() in the guest-entry path
+
+    if (typeof window.executeAppNavigation === 'function') {
+      window.executeAppNavigation('home');
+    } else if (typeof window.navigate === 'function') {
+      window.navigate('home');
+    }
+  } finally {
+    window.__isEnteringGuestMode = false;
   }
 };
 
@@ -3846,13 +3941,17 @@ function renderMapScreen(params = {}) {
   const html = `
     <div class="screen map-screen" style="position: relative; width: 100%; height: 100%; display: flex; flex-direction: column; overflow: hidden; background: #0B5A68;">
       
-      <!-- Top Left Universal Back Button -->
-      <div style="position: absolute; top: 16px; left: 16px; z-index: 1000;">
-        ${window.renderUniversalBackButton('home')}
+      <!-- Top Left Header & Guest Badge -->
+      <div style="position: absolute; top: 16px; left: 16px; z-index: 1000; display: flex; align-items: center; gap: 8px;">
+        <span style="font-weight: 800; font-size: 16px; color: #FFFFFF; text-shadow: 0 1px 3px rgba(0,0,0,0.6);">Map</span>
+        ${window.getGuestModeBadge()}
       </div>
 
-      <!-- Top Right Legend Index -->
-      <div style="position: absolute; top: 16px; right: 14px; background: rgba(255,255,255,0.96); backdrop-filter: blur(8px); border-radius: 14px; padding: 9px 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.18); z-index: 1000; font-size: 11px; border: 1px solid rgba(0,0,0,0.06);">
+      <!-- Top Right Universal Back Button -->
+      ${window.renderUniversalBackButton('home')}
+
+      <!-- Top Right Legend Index (Offset below Universal Back Button) -->
+      <div style="position: absolute; top: 68px; right: 14px; background: rgba(255,255,255,0.96); backdrop-filter: blur(8px); border-radius: 14px; padding: 9px 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.18); z-index: 1000; font-size: 11px; border: 1px solid rgba(0,0,0,0.06);">
         <div style="display: flex; align-items: center; gap: 7px; margin-bottom: 5px;">
           <span style="width: 10px; height: 10px; border-radius: 50%; background: #2563EB; display: inline-block; box-shadow: 0 0 0 2px rgba(37,99,235,0.25);"></span>
           <span style="font-weight: 700; color: #1E293B;">You Are Here</span>
@@ -4398,18 +4497,22 @@ function initAuthListener() {
 }
 
 function requireAuth(actionType, callback, siteId = null, payload = null) {
-  if (auth?.currentUser || (!state.isGuest && state.user?.uid)) {
-    callback();
-  } else {
-    state.pendingAction = { type: actionType, callback, siteId, payload };
-    let msg = "Sign in or Create an Account to proceed.";
-    if (actionType === 'VERIFY') msg = "Sign in required to verify site visits & earn XP on the ledger!";
-    if (actionType === 'LEDGER') msg = "Sign in required to sign heritage petitions & view audit proofs.";
-    if (actionType === 'REWARD') msg = "Sign in required to redeem & unlock heritage rewards.";
+  const capabilityMap = {
+    'VERIFY': 'verification',
+    'LEDGER': 'activism-action',
+    'REWARD': 'redeem-reward',
+    'QUIZ': 'quiz',
+    'PROFILE': 'profile-action'
+  };
+  const capability = capabilityMap[actionType] || 'full-landmark';
+  const originRoute = window.state?.currentScreen || 'home';
 
-    showNotification(msg, "info");
-    openAuthModal('signin');
-  }
+  return requestProtectedAccess({
+    capability,
+    originRoute,
+    originParams: { siteId, payload },
+    onAuthorized: callback
+  });
 }
 
 // ============================================================================
@@ -4438,19 +4541,24 @@ function ensureGoogleAuthInitialized() {
 }
 window.ensureGoogleAuthInitialized = ensureGoogleAuthInitialized;
 
-// ============================================================================
-// ONE-TAP DIRECT GOOGLE AUTHENTICATION & ACCOUNT SELECTOR PROMPT
-// ============================================================================
 window.handleGoogleSignInClick = async function () {
   if (window.state?.isAuthenticating) {
-    console.log('[AUTH-RUNTIME 01] tap ignored (already authenticating)');
+    console.log('[AUTH-RUNTIME] stage=tap-ignored reason=already_authenticating');
     return;
   }
 
   if (!window.state) window.state = {};
+  const attemptId = 'attempt_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
   window.state.isAuthenticating = true;
+  window.state.authAttempt = {
+    id: attemptId,
+    status: 'initializing',
+    originRoute: window.state?.pendingAuthReturn?.originRoute || 'home',
+    startedAt: new Date().toISOString()
+  };
 
-  console.log('[AUTH-RUNTIME 01] tap');
+  console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=tap`);
+  console.log(`[AUTH-STATE] firebaseUidPresent=${Boolean(auth?.currentUser?.uid)} attempt=${attemptId} route=${window.state?.currentScreen}`);
 
   // Disable Google Sign-In buttons across auth screen & modals
   const googleBtns = document.querySelectorAll('#btn-google-signin, .google-btn, [onclick*="handleGoogleSignIn"]');
@@ -4481,11 +4589,15 @@ window.handleGoogleSignInClick = async function () {
   try {
     const isNative = Boolean(window.Capacitor?.isNativePlatform && window.Capacitor.isNativePlatform());
 
-    // 1. Initialize GoogleAuth safely without calling signOut()
+    // 1. Initialize GoogleAuth safely
+    console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=initialize-start`);
     try {
       await ensureGoogleAuthInitialized();
+      console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=initialize-success`);
+      window.state.authAttempt.status = 'selecting-account';
     } catch (initErr) {
-      console.log(`[AUTH-RUNTIME ERROR] stage=initialize message=${initErr?.message || initErr}`);
+      console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=failed code=init_error message=${initErr?.message || initErr}`);
+      window.state.authAttempt.status = 'failed';
       cleanup();
       if (typeof window.showNotification === 'function') {
         window.showNotification("Google Authentication initialization failed.", "error");
@@ -4494,12 +4606,13 @@ window.handleGoogleSignInClick = async function () {
     }
 
     if (isNative) {
-      console.log('[AUTH-RUNTIME 04] selector-start');
+      console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=selector-start`);
       let googleUser = null;
       try {
         googleUser = await GoogleAuth.signIn();
       } catch (signInErr) {
-        console.log(`[AUTH-RUNTIME CANCELLED] GoogleAuth.signIn rejected: ${signInErr?.message || signInErr}`);
+        console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=cancelled message=${signInErr?.message || signInErr}`);
+        window.state.authAttempt.status = 'cancelled';
         cleanup();
         if (typeof window.showNotification === 'function') {
           window.showNotification("Google Sign-In cancelled.", "info");
@@ -4508,21 +4621,19 @@ window.handleGoogleSignInClick = async function () {
       }
 
       if (!googleUser) {
-        console.log('[AUTH-RUNTIME CANCELLED] GoogleAuth.signIn returned null');
+        console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=cancelled message=null_user`);
+        window.state.authAttempt.status = 'cancelled';
         cleanup();
         return; // GUARD: STAY ON SIGN IN SCREEN
       }
 
       const email = googleUser.email || googleUser.user?.email || '';
-      const maskedEmail = email ? email.replace(/^(.{1,2}).*(@.*)$/, '$1***$2') : 'masked';
-      console.log(`[AUTH-RUNTIME 05] selector-returned account=${maskedEmail}`);
+      console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=selector-returned`);
 
       const idToken = googleUser.authentication?.idToken || googleUser.idToken;
-      const idTokenPresent = Boolean(idToken);
-      console.log(`[AUTH-RUNTIME 06] idTokenPresent=${idTokenPresent}`);
-
       if (!idToken) {
-        console.log('[AUTH-RUNTIME ERROR] stage=native-token message=No ID token returned');
+        console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=failed code=no_id_token`);
+        window.state.authAttempt.status = 'failed';
         cleanup();
         if (typeof window.showNotification === 'function') {
           window.showNotification("Google Sign-In failed: No security token returned.", "error");
@@ -4530,14 +4641,16 @@ window.handleGoogleSignInClick = async function () {
         return; // GUARD: STAY ON SIGN IN SCREEN
       }
 
-      console.log('[AUTH-RUNTIME 07] firebase-credential-start');
+      console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=credential-start`);
+      window.state.authAttempt.status = 'exchanging-credential';
       const credential = GoogleAuthProvider.credential(idToken);
 
       let credentialResult = null;
       try {
         credentialResult = await signInWithCredential(auth, credential);
       } catch (fbErr) {
-        console.log(`[AUTH-RUNTIME ERROR] stage=firebase-credential message=${fbErr?.message || fbErr}`);
+        console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=failed code=firebase_credential_error message=${fbErr?.message || fbErr}`);
+        window.state.authAttempt.status = 'failed';
         cleanup();
         if (typeof window.showNotification === 'function') {
           window.showNotification("Firebase authentication failed: " + fbErr.message, "error");
@@ -4546,16 +4659,14 @@ window.handleGoogleSignInClick = async function () {
       }
 
       const fbUser = auth?.currentUser || credentialResult?.user;
-      const uidPresent = Boolean(fbUser && fbUser.uid);
-      console.log(`[AUTH-RUNTIME 08] firebase-user-verified uidPresent=${uidPresent}`);
-
-      if (!uidPresent) {
-        console.log('[AUTH-RUNTIME ERROR] stage=user-confirmation message=Firebase user null after credential exchange');
+      if (!fbUser || !fbUser.uid) {
+        console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=failed code=null_firebase_user`);
+        window.state.authAttempt.status = 'failed';
         cleanup();
         return; // GUARD: STAY ON SIGN IN SCREEN
       }
 
-      console.log('[AUTH-RUNTIME 09] navigation-approved');
+      console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=credential-success`);
 
       const userSession = {
         uid: fbUser.uid,
@@ -4567,21 +4678,13 @@ window.handleGoogleSignInClick = async function () {
         xp: 50
       };
 
-      localStorage.setItem('yathralanka_current_user', JSON.stringify(userSession));
-      localStorage.setItem('yathralanka_logged_in', 'true');
-      window.state.user = userSession;
-      window.state.currentUser = userSession;
-      window.state.isGuest = false;
-      window.state.isLoggedIn = true;
-
       cleanup();
-      if (typeof window.executeAppNavigation === 'function') {
-        window.executeAppNavigation('home');
-      }
+      completeVerifiedAuthentication({ attemptId, firebaseUser: fbUser, userSession });
       return;
     } else {
       // WEB PLATFORM FLOW
-      console.log('[AUTH-RUNTIME 05] web-selector-start');
+      console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=selector-start`);
+      window.state.authAttempt.status = 'selecting-account';
       const provider = new GoogleAuthProvider();
       provider.setCustomParameters({ prompt: 'select_account' });
 
@@ -4589,26 +4692,24 @@ window.handleGoogleSignInClick = async function () {
       try {
         result = await signInWithPopup(auth, provider);
       } catch (popupErr) {
-        console.log(`[AUTH-RUNTIME CANCELLED] Web signInWithPopup rejected: ${popupErr?.message || popupErr}`);
+        console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=cancelled message=${popupErr?.message || popupErr}`);
+        window.state.authAttempt.status = 'cancelled';
         cleanup();
         return;
       }
 
       const fbUser = result?.user || auth?.currentUser;
       if (!fbUser || !fbUser.uid) {
-        console.log('[AUTH-RUNTIME ERROR] stage=web-user-confirmation code=null_user message=Web Google Sign-In returned no valid Firebase user');
+        console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=failed code=null_web_user`);
+        window.state.authAttempt.status = 'failed';
         cleanup();
         return;
       }
 
-      const email = fbUser.email || '';
-      const maskedEmail = email ? email.replace(/^(.{1,2}).*(@.*)$/, '$1***$2') : 'masked';
-      console.log(`[AUTH-RUNTIME 06] web-selector-returned account=${maskedEmail}`);
-      console.log('[AUTH-RUNTIME 07] idTokenPresent=true');
-      console.log(`[AUTH-RUNTIME 09] firebase-credential-success uid=${fbUser.uid}`);
-      console.log('[AUTH-RUNTIME 10] auth-current-user-confirmed=true');
-      console.log('[AUTH-RUNTIME 11] navigation-authorized');
+      window.state.authAttempt.status = 'exchanging-credential';
+      console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=credential-success`);
 
+      const email = fbUser.email || '';
       const userSession = {
         uid: fbUser.uid,
         name: fbUser.displayName || 'Explorer',
@@ -4618,24 +4719,13 @@ window.handleGoogleSignInClick = async function () {
         emailVerified: true,
         xp: 50
       };
-
-      localStorage.setItem('yathralanka_current_user', JSON.stringify(userSession));
-      localStorage.setItem('yathralanka_logged_in', 'true');
-      window.state.user = userSession;
-      window.state.currentUser = userSession;
-      window.state.isGuest = false;
-      window.state.isLoggedIn = true;
-
       cleanup();
-      if (typeof window.executeAppNavigation === 'function') {
-        window.executeAppNavigation('home');
-      }
+      completeVerifiedAuthentication({ attemptId, firebaseUser: fbUser, userSession });
       return;
     }
   } catch (error) {
-    console.log(`[AUTH-RUNTIME ERROR] stage=unhandled code=exception message=${error?.message || error}`);
-    cleanup();
-  } finally {
+    console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=failed code=exception message=${error?.message || error}`);
+    if (window.state?.authAttempt) window.state.authAttempt.status = 'failed';
     cleanup();
   }
 };
@@ -6531,8 +6621,8 @@ window.renderDashboard = function renderDashboard() {
           <div style="background: #FEF9EE; border: 1.5px solid #F6E7C1; border-radius: 20px; padding: 18px 16px; box-shadow: 0 4px 18px rgba(180, 130, 40, 0.08); margin-bottom: 14px;">
             <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
               <div>
-                <h2 style="margin: 0; font-size: 17.5px; font-weight: 800; color: #1E293B; letter-spacing: -0.2px;">
-                  Welcome, ${displayName}!
+                <h2 style="margin: 0; font-size: 17.5px; font-weight: 800; color: #1E293B; letter-spacing: -0.2px; display: flex; align-items: center; gap: 6px;">
+                  Welcome, ${displayName}! ${window.getGuestModeBadge()}
                 </h2>
                 <p style="margin: 3px 0 0 0; font-size: 12px; font-weight: 600; color: #786542;">
                   Rank: ${currentRankName} • ${currentXP} XP
@@ -7010,7 +7100,7 @@ function renderDirectoryScreen(params = {}) {
         
         <div style="display: flex; align-items: center; justify-content: space-between;">
           ${window.renderUniversalBackButton('home')}
-          <h2 style="margin: 0; font-size: 17px; font-weight: 800; color: #1E293B;">Directory</h2>
+          <h2 style="margin: 0; font-size: 17px; font-weight: 800; color: #1E293B; display: inline-flex; align-items: center; gap: 6px;">Directory ${window.getGuestModeBadge()}</h2>
           <div style="width: 50px;"></div>
         </div>
 
@@ -8841,7 +8931,7 @@ function renderActivismDashboard() {
   return `
     <div class="screen activism-screen activism-container impact-container" id="activism-view" style="padding-bottom: 80px;">
       <div class="activism-top-header" style="padding: 20px 20px 6px 20px;">
-        <h2 style="font-size: 26px; font-weight: 900;">Make an Impact</h2>
+        <h2 style="font-size: 26px; font-weight: 900; display: flex; align-items: center; justify-content: space-between;">Make an Impact ${window.getGuestModeBadge()}</h2>
         <p style="font-size: 12px; color: var(--color-gray); margin-top: 4px;">Small actions : Big change</p>
       </div>
       <div style="display: flex; flex-direction: column; gap: 14px; padding: 10px 16px;">
@@ -9014,7 +9104,7 @@ function renderRewardsDashboard() {
   return `
     <div class="screen rewards-screen rewards-container" id="rewards-view" style="padding-bottom: 80px;">
       <div class="rewards-top-header" style="padding: 20px 20px 6px 20px;">
-        <h2 style="font-size: 26px; font-weight: 900;">Rewards</h2>
+        <h2 style="font-size: 26px; font-weight: 900; display: flex; align-items: center; justify-content: space-between;">Rewards ${window.getGuestModeBadge()}</h2>
         <p style="font-size: 12px; color: var(--color-gray); margin-top: 4px;">Everything you have achieved.</p>
       </div>
       <div style="display: flex; flex-direction: column; gap: 14px; padding: 10px 16px;">
@@ -9348,7 +9438,7 @@ function renderProfile() {
 
       <!-- Profile Header Title: strictly "My Profile" -->
       <div style="padding: 12px 20px 10px 20px; text-align: center; position: relative;">
-        <h2 style="font-size: 24px; font-weight: 800; color: #0B5A68; margin: 0; font-family: inherit; letter-spacing: -0.3px;">My Profile</h2>
+        <h2 style="font-size: 24px; font-weight: 800; color: #0B5A68; margin: 0; font-family: inherit; letter-spacing: -0.3px; display: inline-flex; align-items: center; justify-content: center; gap: 6px;">My Profile ${window.getGuestModeBadge()}</h2>
         <div style="width: 60px; height: 2.5px; background: linear-gradient(90deg, transparent, #EBB34D, transparent); margin: 6px auto 0 auto; border-radius: 2px;"></div>
       </div>
 
