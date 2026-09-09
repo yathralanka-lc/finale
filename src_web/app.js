@@ -41,9 +41,9 @@ console.log = function (...args) {
   origConsoleLog.apply(console, args);
   try {
     const msg = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
-    if (msg.includes('MAP-ACTUAL') || msg.includes('SITE-ACTUAL') || msg.includes('FREEZE') || msg.includes('MAP-FREEZE') || msg.includes('SITE-FREEZE')) {
+    if (msg.includes('MAP-ACTUAL') || msg.includes('SITE-ACTUAL') || msg.includes('FREEZE') || msg.includes('MAP-FREEZE') || msg.includes('SITE-FREEZE') || msg.includes('SITE-POST') || msg.includes('SITE-MUTATION') || msg.includes('SITE-CONTROL')) {
       window._freezeLogHistory.push(msg);
-      if (window._freezeLogHistory.length > 20) window._freezeLogHistory.shift();
+      if (window._freezeLogHistory.length > 30) window._freezeLogHistory.shift();
     }
   } catch (e) {}
 };
@@ -57,17 +57,80 @@ window.__siteTapCounters = {
   executeAppNavigation: 0
 };
 
-window.__freezeProbe = function(label) {
+// --- STEP 2B: COMPREHENSIVE POST-PREVIEW HIT-TEST & DOM DUMP ---
+window.__dumpPostPreviewState = function(label = 'POSTPREVIEW-DUMP') {
   try {
-    const cx = Math.floor(window.innerWidth / 2);
-    const cy = Math.floor(window.innerHeight / 2);
-    const centerEl = document.elementFromPoint(cx, cy);
-
-    const allEls = Array.from(document.querySelectorAll('*'));
-    const positioned = [];
-    const coveringBig = [];
     const vw = window.innerWidth;
     const vh = window.innerHeight;
+    const cx = Math.floor(vw / 2);
+    const cy = Math.floor(vh / 2);
+
+    const backdrop = document.getElementById('site-preview-drawer-backdrop');
+    const cardEl = backdrop ? backdrop.querySelector('div') : null;
+    const closeBtn = backdrop ? backdrop.querySelector('span[onclick*="closeSitePreview"]') : null;
+    const ctaBtn = backdrop ? backdrop.querySelector('button[onclick*="site-detail"]') : null;
+    const homeNavBtn = document.querySelector('#global-bottom-nav [onclick*="home"]') || document.querySelector('[onclick*="home"]');
+
+    const getElemCenter = (el) => {
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { x: Math.floor(r.left + r.width / 2), y: Math.floor(r.top + r.height / 2) };
+    };
+
+    const cardCenter = getElemCenter(cardEl);
+    const closeCenter = getElemCenter(closeBtn);
+    const ctaCenter = getElemCenter(ctaBtn);
+    const homeCenter = getElemCenter(homeNavBtn);
+
+    const hitTestPoints = [
+      { name: 'screen-center', x: cx, y: cy },
+      { name: 'card-center', x: cardCenter?.x, y: cardCenter?.y },
+      { name: 'close-btn-center', x: closeCenter?.x, y: closeCenter?.y },
+      { name: 'cta-btn-center', x: ctaCenter?.x, y: ctaCenter?.y },
+      { name: 'home-nav-center', x: homeCenter?.x, y: homeCenter?.y }
+    ];
+
+    const getParentChain = (el) => {
+      const chain = [];
+      let cur = el;
+      while (cur && cur !== document.body) {
+        chain.push(`${cur.tagName}${cur.id ? '#' + cur.id : ''}${cur.className ? '.' + String(cur.className).replace(/\s+/g, '.') : ''}`);
+        cur = cur.parentElement;
+      }
+      return chain.join(' > ');
+    };
+
+    const inspectElementAtPoint = (pt) => {
+      if (!pt.x || !pt.y || pt.x < 0 || pt.y < 0 || pt.x > vw || pt.y > vh) return null;
+      const el = document.elementFromPoint(pt.x, pt.y);
+      if (!el) return null;
+      const cs = window.getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      return {
+        pointName: pt.name,
+        point: { x: pt.x, y: pt.y },
+        tagName: el.tagName,
+        id: el.id,
+        className: el.className,
+        zIndex: cs.zIndex,
+        position: cs.position,
+        pointerEvents: cs.pointerEvents,
+        display: cs.display,
+        visibility: cs.visibility,
+        opacity: cs.opacity,
+        rect: { top: Math.round(rect.top), left: Math.round(rect.left), width: Math.round(rect.width), height: Math.round(rect.height) },
+        parentChain: getParentChain(el)
+      };
+    };
+
+    const hitResults = hitTestPoints.map(inspectElementAtPoint).filter(Boolean);
+
+    // Enumerate ALL fixed/absolute elements
+    const allEls = Array.from(document.querySelectorAll('*'));
+    const positioned = [];
+    const coveringOver50 = [];
+    const coveringOver80 = [];
+    const totalArea = vw * vh;
 
     allEls.forEach(el => {
       const cs = window.getComputedStyle(el);
@@ -75,62 +138,134 @@ window.__freezeProbe = function(label) {
         const zIndex = parseInt(cs.zIndex, 10) || 0;
         const rect = el.getBoundingClientRect();
         const area = rect.width * rect.height;
-        const viewportArea = vw * vh;
-        if (area > 0.8 * viewportArea && cs.display !== 'none' && cs.visibility !== 'hidden') {
-          coveringBig.push({
-            tagName: el.tagName, id: el.id, className: el.className,
-            zIndex, pointerEvents: cs.pointerEvents, display: cs.display,
-            visibility: cs.visibility, opacity: cs.opacity
-          });
+        const info = {
+          tagName: el.tagName, id: el.id, className: el.className,
+          zIndex: cs.zIndex, position: cs.position, pointerEvents: cs.pointerEvents,
+          display: cs.display, visibility: cs.visibility, opacity: cs.opacity,
+          rect: { top: Math.round(rect.top), left: Math.round(rect.left), width: Math.round(rect.width), height: Math.round(rect.height) }
+        };
+
+        if (area > 0.5 * totalArea && cs.display !== 'none' && cs.visibility !== 'hidden') {
+          coveringOver50.push(info);
+        }
+        if (area > 0.8 * totalArea && cs.display !== 'none' && cs.visibility !== 'hidden') {
+          coveringOver80.push(info);
         }
         if (zIndex > 0 || cs.position === 'fixed') {
-          positioned.push({
-            tagName: el.tagName, id: el.id, className: el.className,
-            zIndex, position: cs.position, pointerEvents: cs.pointerEvents
-          });
+          positioned.push(info);
         }
       }
     });
 
-    positioned.sort((a, b) => b.zIndex - a.zIndex);
-    const csCenter = centerEl ? window.getComputedStyle(centerEl) : null;
+    positioned.sort((a, b) => (parseInt(b.zIndex, 10) || 0) - (parseInt(a.zIndex, 10) || 0));
 
-    const report = {
-      label,
-      currentScreen: window.state?.currentScreen,
-      centerElement: {
-        tagName: centerEl?.tagName,
-        id: centerEl?.id,
-        className: centerEl?.className,
-        pointerEvents: csCenter?.pointerEvents,
-        display: csCenter?.display,
-        visibility: csCenter?.visibility,
-        opacity: csCenter?.opacity
-      },
-      topPositioned: positioned.slice(0, 10),
-      coveringOver80Percent: coveringBig,
-      mapState: {
-        activeLeafletMapExists: Boolean(window.activeLeafletMap),
-        yathraMapInstanceExists: Boolean(window.yathraMapInstance),
-        mapElementInDom: Boolean(document.getElementById('map'))
-      }
+    const inspectSpecificEl = (el, name) => {
+      if (!el) return { name, exists: false };
+      const cs = window.getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      return {
+        name,
+        exists: true,
+        isConnected: el.isConnected,
+        rect: { top: Math.round(rect.top), left: Math.round(rect.left), width: Math.round(rect.width), height: Math.round(rect.height) },
+        pointerEvents: cs.pointerEvents,
+        zIndex: cs.zIndex,
+        display: cs.display,
+        visibility: cs.visibility,
+        opacity: cs.opacity,
+        datasetDebugInstance: el.dataset?.debugInstance || null
+      };
     };
-    origConsoleLog(`[FREEZE-PROBE] ${label}:`, JSON.stringify(report));
-    return report;
+
+    const exactPreviewEls = [
+      inspectSpecificEl(backdrop, '#site-preview-drawer-backdrop'),
+      inspectSpecificEl(cardEl, 'preview-drawer-card'),
+      inspectSpecificEl(closeBtn, 'preview-close-btn'),
+      inspectSpecificEl(ctaBtn, 'preview-cta-btn')
+    ];
+
+    const dump = {
+      label,
+      timestamp: Date.now(),
+      hitResults,
+      top10Positioned: positioned.slice(0, 10),
+      coveringOver50Percent: coveringOver50,
+      coveringOver80Percent: coveringOver80,
+      exactPreviewElements: exactPreviewEls
+    };
+
+    origConsoleLog(`[SITE-POSTPREVIEW-DUMP] ${label}:`, JSON.stringify(dump));
+    return dump;
   } catch (err) {
-    origConsoleLog('[FREEZE-PROBE-ERR]', err);
+    origConsoleLog('[SITE-POSTPREVIEW-DUMP-ERR]', err);
   }
 };
 
-window.__dumpFreezeState = function () {
-  return window.__freezeProbe('STATE-DUMP');
+window.__dumpMapFrozenState = function() {
+  try {
+    const cx = Math.floor(window.innerWidth / 2);
+    const cy = Math.floor(window.innerHeight / 2);
+    const topEl = document.elementFromPoint(cx, cy);
+    const mapEl = document.getElementById('map');
+    const csMap = mapEl ? window.getComputedStyle(mapEl) : null;
+    const rectMap = mapEl ? mapEl.getBoundingClientRect() : null;
+
+    const allEls = Array.from(document.querySelectorAll('*'));
+    const bigOverlays = [];
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+
+    allEls.forEach(el => {
+      const cs = window.getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      if ((cs.position === 'fixed' || cs.position === 'absolute') && (rect.width * rect.height > 0.8 * vw * vh) && cs.display !== 'none' && cs.visibility !== 'hidden') {
+        bigOverlays.push({ tagName: el.tagName, id: el.id, className: el.className, zIndex: cs.zIndex, pointerEvents: cs.pointerEvents });
+      }
+    });
+
+    const info = {
+      label: 'MAP-ACTUAL-FROZEN-STATE',
+      timestamp: Date.now(),
+      currentScreen: window.state?.currentScreen,
+      centerElement: { tagName: topEl?.tagName, id: topEl?.id, className: topEl?.className },
+      bigOverlays,
+      leafletInstanceCount: (window.activeLeafletMap ? 1 : 0) + (window.yathraMapInstance ? 1 : 0),
+      mapContainerConnected: Boolean(mapEl?.isConnected),
+      mapContainerDimensions: rectMap ? { width: Math.round(rectMap.width), height: Math.round(rectMap.height) } : null,
+      mapPointerEvents: csMap?.pointerEvents
+    };
+    origConsoleLog('[MAP-ACTUAL-FROZEN-STATE]', JSON.stringify(info));
+    return info;
+  } catch (err) {
+    origConsoleLog('[MAP-ACTUAL-FROZEN-STATE-ERR]', err);
+  }
 };
 
-document.addEventListener('pointerdown', (e) => {
-  try {
-    console.log('[MAP-FREEZE 21] [SITE-FREEZE 18] [FREEZE-POINTERDOWN]', 'Time:', Date.now(), 'Pos:', Math.round(e.clientX), Math.round(e.clientY), 'Target:', e.target?.tagName, e.target?.id || e.target?.className);
-  } catch (err) {}
-}, true);
+window.__freezeProbe = function(label) {
+  return window.__dumpPostPreviewState(label);
+};
+
+window.__dumpFreezeState = function () {
+  return window.__dumpPostPreviewState('STATE-DUMP');
+};
+
+// --- STEP 2B: TOUCH TRACING IN CAPTURE & BUBBLE PHASES AFTER PREVIEW EXISTS ---
+['pointerdown', 'pointerup', 'click', 'touchstart', 'touchend'].forEach(evtName => {
+  document.addEventListener(evtName, (e) => {
+    try {
+      const backdropExists = Boolean(document.getElementById('site-preview-drawer-backdrop'));
+      const composedPathStr = e.composedPath ? e.composedPath().slice(0, 5).map(el => el.tagName ? `${el.tagName}${el.id ? '#' + el.id : ''}${el.className ? '.' + String(el.className).replace(/\s+/g, '.') : ''}` : String(el)).join(' > ') : 'N/A';
+      console.log(`[SITE-POST CAPTURE] type:${e.type} target:${e.target?.tagName}#${e.target?.id || ''}.${e.target?.className || ''} pos:(${Math.round(e.clientX || 0)},${Math.round(e.clientY || 0)}) screen:${window.state?.currentScreen} previewExists:${backdropExists} defPrev:${e.defaultPrevented} cancelBbl:${e.cancelBubble} path:${composedPathStr}`);
+    } catch (err) {}
+  }, true);
+
+  document.addEventListener(evtName, (e) => {
+    try {
+      const backdropExists = Boolean(document.getElementById('site-preview-drawer-backdrop'));
+      console.log(`[SITE-POST BUBBLE] type:${e.type} target:${e.target?.tagName}#${e.target?.id || ''}.${e.target?.className || ''} screen:${window.state?.currentScreen} previewExists:${backdropExists}`);
+    } catch (err) {}
+  }, false);
+});
 
 // Environment Detection for Mobile & Native Android Fullscreen Layouts
 (function initNativeEnvironmentClasses() {
@@ -6716,6 +6851,17 @@ window.openSitePreview = function (siteId) {
 
   const backdrop = document.createElement('div');
   backdrop.id = 'site-preview-drawer-backdrop';
+  const instanceToken = 'preview-' + Date.now();
+  backdrop.dataset.debugInstance = instanceToken;
+  console.log('[SITE-PREVIEW IDENTITY TOKEN inserted]:', instanceToken);
+
+  [100, 500, 1500].forEach(delay => {
+    setTimeout(() => {
+      const el = document.getElementById('site-preview-drawer-backdrop');
+      console.log(`[SITE-PREVIEW IDENTITY TOKEN +${delay}ms]:`, el ? el.dataset?.debugInstance : 'ELEMENT REMOVED', 'isConnected:', Boolean(el?.isConnected));
+    }, delay);
+  });
+
   backdrop.style.cssText = `
     position: absolute; top: 0; left: 0; width: 100%; height: 100%;
     background: rgba(8, 43, 51, 0.55); backdrop-filter: blur(4px);
@@ -6724,7 +6870,9 @@ window.openSitePreview = function (siteId) {
   `;
 
   backdrop.onclick = function (e) {
+    console.log('[SITE-CONTROL backdrop ENTER]', 'target:', e.target?.tagName, 'id:', e.target?.id, 'class:', e.target?.className);
     if (e.target === backdrop) window.closeSitePreview();
+    console.log('[SITE-CONTROL backdrop EXIT]');
   };
 
   console.log('[SITE-FREEZE 14] overlay/preview created');
@@ -6746,32 +6894,57 @@ window.openSitePreview = function (siteId) {
         ${site.description ? site.description.substring(0, 130) + '...' : 'Explore historical architecture, sacred grounds, and cultural archives.'}
       </p>
       <button 
-        onclick="console.log('[DETAIL-TRACE 01] full-landmark button clicked'); window.closeSitePreview(); window.navigate('site-detail', { id: '${site.id}' });"
+        onclick="console.log('[SITE-CONTROL cta ENTER]', 'siteId:', '${site.id}'); window.closeSitePreview(); window.navigate('site-detail', { id: '${site.id}' }); console.log('[SITE-CONTROL cta EXIT]');"
         style="width: 100%; background: #F5A623; color: #1E293B; font-size: 14px; font-weight: 800; border: none; padding: 12px; border-radius: 12px; cursor: pointer; box-shadow: 0 4px 14px rgba(245, 166, 35, 0.35); margin-bottom: 8px;">
         View Full Landmark & Quests →
       </button>
       <div style="text-align: center;">
-        <span onclick="window.closeSitePreview()" style="font-size: 11.5px; font-weight: 700; color: #64748B; cursor: pointer;">
+        <span onclick="console.log('[SITE-CONTROL close ENTER]'); window.closeSitePreview(); console.log('[SITE-CONTROL close EXIT]');" style="font-size: 11.5px; font-weight: 700; color: #64748B; cursor: pointer;">
           Keep Exploring
         </span>
       </div>
     </div>
   `;
 
+  // Attach 3s MutationObserver
+  if (window._siteMutationObserver) {
+    try { window._siteMutationObserver.disconnect(); } catch (e) {}
+  }
+  const observer = new MutationObserver((mutations) => {
+    mutations.forEach(m => {
+      let removed = Array.from(m.removedNodes).map(n => n.id || n.className || n.tagName).join(', ');
+      let added = Array.from(m.addedNodes).map(n => n.id || n.className || n.tagName).join(', ');
+      if (removed.includes('preview') || added.includes('preview') || m.target.id === 'screen-viewport' || m.target.id === 'app') {
+        console.log(`[SITE-MUTATION] type:${m.type} target:${m.target.tagName}#${m.target.id}.${m.target.className} added:[${added}] removed:[${removed}]`);
+      }
+    });
+  });
+
   chassis.appendChild(backdrop);
+  observer.observe(chassis, { childList: true, subtree: true });
+  window._siteMutationObserver = observer;
+  setTimeout(() => { observer.disconnect(); }, 3000);
+
   console.log('[SITE-FREEZE 15] overlay inserted & visible');
   console.log('[SITE-FREEZE 16] pointer-events state:', window.getComputedStyle(backdrop).pointerEvents);
   if (typeof window.updateGlobalFooterVisibility === 'function') {
     window.updateGlobalFooterVisibility();
   }
+
+  // Dump exact post-preview hit-test state
+  if (typeof window.__dumpPostPreviewState === 'function') {
+    window.__dumpPostPreviewState('OPEN_SITE_PREVIEW_INSERTED');
+  }
   console.log('[SITE-FREEZE 17] openSitePreview returned');
 };
 
 window.closeSitePreview = function () {
+  console.log('[SITE-CONTROL close ENTER]');
   document.querySelectorAll('#site-preview-drawer-backdrop').forEach(drawer => drawer.remove());
   if (typeof window.updateGlobalFooterVisibility === 'function') {
     window.updateGlobalFooterVisibility();
   }
+  console.log('[SITE-CONTROL close EXIT]');
 };
 
 window.renderDirectoryGrid = function () {
