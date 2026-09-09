@@ -2246,17 +2246,15 @@ document.addEventListener('DOMContentLoaded', () => {
 // --- GLOBAL ROUTING CONTROLLERS & EVENT DELEGATION ---
 
 // 1. Launch Auth Card on 'signin' or 'signup' tab
-window.openAuthScreen = function (targetTab) {
+window.openAuthScreen = function (targetTab = 'signin') {
   console.log("👉 Opening Auth screen on tab:", targetTab);
   if (!window.state) window.state = {};
-  if (typeof state !== 'undefined') {
-    state.authActiveTab = targetTab === 'signup' ? 'signup' : 'signin';
-  }
   window.state.authActiveTab = targetTab === 'signup' ? 'signup' : 'signin';
-  if (typeof window.navigate === 'function') {
+  window.state.authOrigin = null;
+  if (typeof window.executeAppNavigation === 'function') {
+    window.executeAppNavigation('auth');
+  } else if (typeof window.navigate === 'function') {
     window.navigate('auth');
-  } else if (typeof window.renderScreen === 'function') {
-    window.renderScreen('auth');
   }
 };
 
@@ -2786,12 +2784,7 @@ if (!window.state) {
   };
 }
 
-// Open Auth Screen directly from Welcome Screen (NO BACK BUTTON)
-window.openAuthScreen = function (tab = 'signin') {
-  window.state.authActiveTab = tab;
-  window.state.authOrigin = null; // Strictly disable back button
-  window.navigate('auth');
-};
+// Open Auth Screen directly from Welcome Screen (uses canonical window.openAuthScreen above)
 
 // Open Auth Screen from Inside as Guest (SHOWS BACK BUTTON)
 window.openAuthAsGuest = function (fromScreen = 'home') {
@@ -2953,7 +2946,11 @@ window.handleSignOut = function () {
     try { signOut(auth); } catch (e) {}
   }
   if (typeof GoogleAuth !== 'undefined' && typeof GoogleAuth.signOut === 'function') {
-    try { GoogleAuth.signOut(); } catch (e) {}
+    if (typeof ensureGoogleAuthInitialized === 'function') {
+      ensureGoogleAuthInitialized().then(() => {
+        GoogleAuth.signOut().catch(() => {});
+      }).catch(() => {});
+    }
   }
 
   if (window.state) {
@@ -4112,85 +4109,88 @@ function requireAuth(actionType, callback, siteId = null, payload = null) {
 }
 
 // ============================================================================
-// ONE-TAP DIRECT GOOGLE AUTHENTICATION & ACCOUNT SELECTOR PROMPT
+// GUARDED GOOGLE AUTH INITIALIZATION PROMISE LOCK
 // ============================================================================
+let googleAuthInitPromise = null;
+
+function ensureGoogleAuthInitialized() {
+  if (googleAuthInitPromise) return googleAuthInitPromise;
+
+  googleAuthInitPromise = (async () => {
+    const isNative = Boolean(window.Capacitor?.isNativePlatform && window.Capacitor.isNativePlatform());
+    if (isNative && typeof GoogleAuth !== 'undefined' && typeof GoogleAuth.initialize === 'function') {
+      console.log('[AUTH-RUNTIME 02] initialize-start');
+      await GoogleAuth.initialize({
+        clientId: '1032179534120-ttht7fjohqbvdrjurvjnudnr9ebggfp8.apps.googleusercontent.com',
+        scopes: ['profile', 'email'],
+        grantOfflineAccess: false
+      });
+      console.log('[AUTH-RUNTIME 03] initialize-success');
+    }
+    return true;
+  })();
+
+  return googleAuthInitPromise;
+}
+window.ensureGoogleAuthInitialized = ensureGoogleAuthInitialized;
+
 // ============================================================================
 // ONE-TAP DIRECT GOOGLE AUTHENTICATION & ACCOUNT SELECTOR PROMPT
 // ============================================================================
 window.handleGoogleSignInClick = async function () {
-  if (!window.__authAttemptCount) window.__authAttemptCount = 0;
-  window.__authAttemptCount++;
-  console.log(`[AUTH-RUNTIME 01] tap attempt=${window.__authAttemptCount}`);
-
-  const preUid = auth?.currentUser?.uid || null;
-  console.log(`[AUTH-RUNTIME 02] preclear firebaseUid=${preUid || 'null'}`);
+  if (window.state?.isAuthenticating) {
+    console.log('[AUTH-RUNTIME 01] tap ignored (already authenticating)');
+    return;
+  }
 
   if (!window.state) window.state = {};
   window.state.isAuthenticating = true;
+
+  console.log('[AUTH-RUNTIME 01] tap');
+
+  // Disable Google Sign-In buttons across auth screen & modals
+  const googleBtns = document.querySelectorAll('#btn-google-signin, .google-btn, [onclick*="handleGoogleSignIn"]');
+  googleBtns.forEach(btn => {
+    btn.setAttribute('disabled', 'true');
+    btn.style.opacity = '0.6';
+    btn.style.pointerEvents = 'none';
+  });
 
   document.querySelectorAll('#auth-loading-overlay').forEach(el => el.remove());
 
   const loader = document.createElement('div');
   loader.id = 'auth-loading-overlay';
   loader.style.cssText = 'position:fixed; inset:0; background:rgba(8,43,51,0.7); backdrop-filter:blur(4px); z-index:999999; display:flex; align-items:center; justify-content:center;';
-  loader.innerHTML = '<div style="background:#FAF5E8; color:#125463; padding:18px 26px; border-radius:16px; font-weight:800; border:1.5px solid #DFCEAA; box-shadow:0 10px 30px rgba(0,0,0,0.3);">Opening Google Account Selector...</div>';
+  loader.innerHTML = '<div style="background:#FAF5E8; color:#125463; padding:18px 26px; border-radius:16px; font-weight:800; border:1.5px solid #DFCEAA; box-shadow:0 10px 30px rgba(0,0,0,0.3);">Connecting to Google...</div>';
   document.body.appendChild(loader);
 
   const cleanup = () => {
     if (window.state) window.state.isAuthenticating = false;
     document.querySelectorAll('#auth-loading-overlay').forEach(el => el.remove());
+    googleBtns.forEach(btn => {
+      btn.removeAttribute('disabled');
+      btn.style.opacity = '1';
+      btn.style.pointerEvents = 'auto';
+    });
   };
 
   try {
-    // 1. Native Plugin SignOut Pre-Clear
-    if (typeof GoogleAuth !== 'undefined' && typeof GoogleAuth.signOut === 'function') {
-      try {
-        await GoogleAuth.signOut();
-        console.log('[AUTH-RUNTIME 03] native-signout-complete');
-      } catch (soErr) {
-        console.log(`[AUTH-RUNTIME 03] native-signout-complete (notice: ${soErr?.message || soErr})`);
-      }
-    } else {
-      console.log('[AUTH-RUNTIME 03] native-signout-complete (plugin unavailable)');
-    }
-
-    // 2. Firebase SignOut Pre-Clear
-    if (auth && typeof signOut === 'function') {
-      try {
-        await signOut(auth);
-        console.log('[AUTH-RUNTIME 04] firebase-signout-complete');
-      } catch (fbSoErr) {
-        console.log(`[AUTH-RUNTIME 04] firebase-signout-complete (notice: ${fbSoErr?.message || fbSoErr})`);
-      }
-    } else {
-      console.log('[AUTH-RUNTIME 04] firebase-signout-complete (auth uninitialized)');
-    }
-
-    // 3. Clear Session Keys & Memory State
-    localStorage.removeItem('yathralanka_logged_in');
-    localStorage.removeItem('yathralanka_current_user');
-    localStorage.removeItem('yathralanka_active_user');
-    window.state.user = null;
-    window.state.currentUser = null;
-    window.state.isLoggedIn = false;
-    window.state.isGuest = true;
-
     const isNative = Boolean(window.Capacitor?.isNativePlatform && window.Capacitor.isNativePlatform());
 
-    if (isNative) {
-      if (typeof GoogleAuth !== 'undefined' && typeof GoogleAuth.initialize === 'function') {
-        try {
-          await GoogleAuth.initialize({
-            clientId: '1032179534120-ttht7fjohqbvdrjurvjnudnr9ebggfp8.apps.googleusercontent.com',
-            scopes: ['profile', 'email'],
-            grantOfflineAccess: false
-          });
-        } catch (initErr) {
-          console.warn("Notice: GoogleAuth.initialize warning:", initErr);
-        }
+    // 1. Initialize GoogleAuth safely without calling signOut()
+    try {
+      await ensureGoogleAuthInitialized();
+    } catch (initErr) {
+      console.log(`[AUTH-RUNTIME ERROR] stage=initialize message=${initErr?.message || initErr}`);
+      cleanup();
+      if (typeof window.showNotification === 'function') {
+        window.showNotification("Google Authentication initialization failed.", "error");
       }
+      return; // GUARD: STAY ON SIGN IN SCREEN
+    }
 
-      console.log('[AUTH-RUNTIME 05] native-selector-start');
+    if (isNative) {
+      console.log('[AUTH-RUNTIME 04] selector-start');
       let googleUser = null;
       try {
         googleUser = await GoogleAuth.signIn();
@@ -4206,19 +4206,19 @@ window.handleGoogleSignInClick = async function () {
       if (!googleUser) {
         console.log('[AUTH-RUNTIME CANCELLED] GoogleAuth.signIn returned null');
         cleanup();
-        return;
+        return; // GUARD: STAY ON SIGN IN SCREEN
       }
 
       const email = googleUser.email || googleUser.user?.email || '';
       const maskedEmail = email ? email.replace(/^(.{1,2}).*(@.*)$/, '$1***$2') : 'masked';
-      console.log(`[AUTH-RUNTIME 06] native-selector-returned account=${maskedEmail}`);
+      console.log(`[AUTH-RUNTIME 05] selector-returned account=${maskedEmail}`);
 
       const idToken = googleUser.authentication?.idToken || googleUser.idToken;
       const idTokenPresent = Boolean(idToken);
-      console.log(`[AUTH-RUNTIME 07] idTokenPresent=${idTokenPresent}`);
+      console.log(`[AUTH-RUNTIME 06] idTokenPresent=${idTokenPresent}`);
 
       if (!idToken) {
-        console.log('[AUTH-RUNTIME ERROR] stage=native-token code=missing_token message=No ID token returned');
+        console.log('[AUTH-RUNTIME ERROR] stage=native-token message=No ID token returned');
         cleanup();
         if (typeof window.showNotification === 'function') {
           window.showNotification("Google Sign-In failed: No security token returned.", "error");
@@ -4226,14 +4226,14 @@ window.handleGoogleSignInClick = async function () {
         return; // GUARD: STAY ON SIGN IN SCREEN
       }
 
-      console.log('[AUTH-RUNTIME 08] firebase-credential-start');
+      console.log('[AUTH-RUNTIME 07] firebase-credential-start');
       const credential = GoogleAuthProvider.credential(idToken);
 
       let credentialResult = null;
       try {
         credentialResult = await signInWithCredential(auth, credential);
       } catch (fbErr) {
-        console.log(`[AUTH-RUNTIME ERROR] stage=firebase-credential code=${fbErr.code || 'error'} message=${fbErr.message}`);
+        console.log(`[AUTH-RUNTIME ERROR] stage=firebase-credential message=${fbErr?.message || fbErr}`);
         cleanup();
         if (typeof window.showNotification === 'function') {
           window.showNotification("Firebase authentication failed: " + fbErr.message, "error");
@@ -4242,23 +4242,16 @@ window.handleGoogleSignInClick = async function () {
       }
 
       const fbUser = auth?.currentUser || credentialResult?.user;
-      if (!fbUser || !fbUser.uid) {
-        console.log('[AUTH-RUNTIME ERROR] stage=user-confirmation code=null_user message=Firebase user null after credential exchange');
+      const uidPresent = Boolean(fbUser && fbUser.uid);
+      console.log(`[AUTH-RUNTIME 08] firebase-user-verified uidPresent=${uidPresent}`);
+
+      if (!uidPresent) {
+        console.log('[AUTH-RUNTIME ERROR] stage=user-confirmation message=Firebase user null after credential exchange');
         cleanup();
-        return;
+        return; // GUARD: STAY ON SIGN IN SCREEN
       }
 
-      console.log(`[AUTH-RUNTIME 09] firebase-credential-success uid=${fbUser.uid}`);
-      const confirmed = Boolean(auth?.currentUser && auth.currentUser.uid === fbUser.uid);
-      console.log(`[AUTH-RUNTIME 10] auth-current-user-confirmed=${confirmed}`);
-
-      if (!confirmed) {
-        console.log('[AUTH-RUNTIME ERROR] stage=user-confirmation code=mismatch message=currentUser UID mismatch');
-        cleanup();
-        return;
-      }
-
-      console.log('[AUTH-RUNTIME 11] navigation-authorized');
+      console.log('[AUTH-RUNTIME 09] navigation-approved');
 
       const userSession = {
         uid: fbUser.uid,
@@ -9429,56 +9422,10 @@ function attachEvents() {
     navigate('home');
   });
 
-  window.openAuthScreen = function (tabName) {
-    if (!window.state) window.state = {};
-    window.state.authActiveTab = tabName === 'signup' ? 'signup' : 'signin';
-    if (typeof window.navigate === 'function') {
-      window.navigate('auth');
-    }
-  };
-
-  // window.continueAsGuest is defined as primary canonical guest handler above
-
-  // Bind Welcome Screen Actions cleanly
+  // Welcome Screen actions delegate directly to canonical window.openAuthScreen and window.continueAsGuest
   window.attachWelcomeEvents = function () {
-    const signInBtn = document.getElementById('btn-welcome-signin') || document.querySelector('.btn-welcome-signin');
-    if (signInBtn) {
-      signInBtn.onclick = function (e) {
-        if (e) { e.preventDefault(); e.stopPropagation(); }
-        window.openAuthScreen('signin');
-      };
-    }
-
-    const signUpBtn = document.getElementById('btn-welcome-signup') || document.querySelector('.btn-welcome-signup');
-    if (signUpBtn) {
-      signUpBtn.onclick = function (e) {
-        if (e) { e.preventDefault(); e.stopPropagation(); }
-        window.openAuthScreen('signup');
-      };
-    }
-
-    const guestBtn = document.getElementById('btn-welcome-guest') || document.getElementById('btn-guest') || document.querySelector('.btn-guest-explore');
-    if (guestBtn) {
-      guestBtn.onclick = window.continueAsGuest;
-    }
+    // Handled cleanly via inline onclick attributes in renderWelcomeScreen()
   };
-
-  // Delegated Fallback Click Listener to ensure 100% button reliability
-  document.addEventListener('click', function (e) {
-    const target = e.target.closest('#btn-welcome-signin, #btn-welcome-signup, #btn-welcome-guest, .btn-welcome-signin, .btn-welcome-signup, .btn-guest-explore');
-    if (!target) return;
-
-    if (target.id === 'btn-welcome-signin' || target.classList.contains('btn-welcome-signin')) {
-      e.preventDefault();
-      window.openAuthScreen('signin');
-    } else if (target.id === 'btn-welcome-signup' || target.classList.contains('btn-welcome-signup')) {
-      e.preventDefault();
-      window.openAuthScreen('signup');
-    } else if (target.id === 'btn-welcome-guest' || target.classList.contains('btn-guest-explore')) {
-      e.preventDefault();
-      window.continueAsGuest(e);
-    }
-  });
 
   window.attachAuthEvents = function () {
     const signInForm = document.getElementById('form-auth-signin');
