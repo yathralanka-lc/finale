@@ -219,6 +219,94 @@ window.normalizeEmail = function (email) {
   return (email || '').toString().trim().toLowerCase();
 };
 
+// Global Startup Error Boundary
+window.addEventListener("error", event => {
+  console.error(
+    "[STARTUP-ERROR]",
+    event.error?.name || "Error",
+    event.message,
+    event.filename,
+    event.lineno,
+    event.colno
+  );
+});
+
+window.addEventListener("unhandledrejection", event => {
+  console.error(
+    "[STARTUP-REJECTION]",
+    event.reason?.name || "PromiseRejection",
+    event.reason?.message || String(event.reason)
+  );
+});
+
+// ============================================================================
+// STABILIZATION STEP 6A.5: STRICT UID-SCOPED USER CACHE & SESSION CONTROLLERS
+// ============================================================================
+window.getUserCacheKey = function (uid) {
+  if (!uid || typeof uid !== "string") return null;
+  return `yathralanka_user_${uid}`;
+};
+
+window.getCompletedSitesKey = function (uid) {
+  if (!uid || typeof uid !== "string") return 'yathralanka_completed_sites_guest';
+  return `yathralanka_completed_sites_${uid}`;
+};
+
+window.getSiteProgressKey = function (uid) {
+  if (!uid || typeof uid !== "string") return 'yathra_site_progress_guest';
+  return `yathra_site_progress_${uid}`;
+};
+
+window.getStoredUserProfile = function (uid) {
+  if (!uid || typeof uid !== "string") return null;
+  try {
+    const raw = localStorage.getItem(`yathralanka_user_${uid}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return (parsed && parsed.uid === uid) ? parsed : null;
+  } catch (e) {
+    return null;
+  }
+};
+
+window.saveStoredUserProfile = function (uid, profileObj) {
+  if (!uid || typeof uid !== "string" || !profileObj) return;
+  try {
+    localStorage.setItem(`yathralanka_user_${uid}`, JSON.stringify(profileObj));
+    localStorage.setItem('yathralanka_active_uid', uid);
+  } catch (e) {}
+};
+
+window.clearActiveUserSession = function () {
+  console.log('[SESSION-CLEAR] Clearing active in-memory user session and active pointers');
+  if (!window.state) window.state = {};
+
+  // Increment auth generation to cancel any pending async writes for previous session
+  window.state.authGeneration = (window.state.authGeneration || 0) + 1;
+
+  window.state.user = null;
+  window.state.currentUser = null;
+  window.state.userData = null;
+  window.state.activeUid = null;
+  window.state.xp = 0;
+  window.state.userXP = 0;
+  window.state.authAttempt = null;
+  window.state.pendingGoogleCredential = null;
+  window.state.pendingProfileSync = null;
+  window.state.siteProgress = {};
+  window.state.completedSites = {};
+
+  // Clear shared active-user pointers from localStorage (leaving UID-scoped profiles intact)
+  localStorage.removeItem('yathralanka_current_user');
+  localStorage.removeItem('yathralanka_active_user');
+  localStorage.removeItem('yathralanka_user');
+  localStorage.removeItem('yathra_current_user');
+  localStorage.removeItem('yathralanka_active_uid');
+  localStorage.removeItem('yathra_user_xp');
+  localStorage.removeItem('yathralanka_user_xp');
+  localStorage.removeItem('yathralanka_logged_in');
+};
+
 window.resolveCanonicalUserProfile = async function (firebaseUser, authProvider = 'google.com', options = {}) {
   if (!firebaseUser || !firebaseUser.uid) return null;
   const uid = firebaseUser.uid;
@@ -226,116 +314,135 @@ window.resolveCanonicalUserProfile = async function (firebaseUser, authProvider 
   const userDocRef = doc(db, 'users', uid);
 
   try {
-    const userSnap = await getDoc(userDocRef);
+    const resultProfile = await runTransaction(db, async (transaction) => {
+      const userSnap = await transaction.get(userDocRef);
 
-    if (!userSnap.exists()) {
-      const cachedUser = (window.state?.user?.uid === uid) ? window.state.user : JSON.parse(localStorage.getItem('yathralanka_current_user') || 'null');
-      const matchingCache = (cachedUser && cachedUser.uid === uid) ? cachedUser : null;
-      const preservedXP = (matchingCache && Number.isFinite(Number(matchingCache.xp))) ? Number(matchingCache.xp) : 50;
-      const isNewCanonicalUser = !(matchingCache && Number.isFinite(Number(matchingCache.xp)) && matchingCache.xp > 0);
+      if (!userSnap.exists()) {
+        const newProfile = {
+          uid: uid,
+          email: firebaseUser.email || '',
+          emailNormalized: emailNorm,
+          preferredDisplayName: options.preferredDisplayName || firebaseUser.displayName || (emailNorm ? emailNorm.split('@')[0] : 'Explorer'),
+          googleDisplayName: firebaseUser.displayName || '',
+          googlePhotoURL: authProvider === 'google.com' ? (firebaseUser.photoURL || '') : '',
+          passwordProfilePhotoURL: '',
+          activeAuthProvider: authProvider,
+          linkedProviders: [authProvider],
+          xp: 50,
+          rank: 'Novice Explorer',
+          welcomeXPAwarded: true,
+          welcomeXPAwardedAt: serverTimestamp(),
+          welcomeBannerSeen: false,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        };
 
-      const welcomeXPAwarded = true;
-      const welcomeBannerSeen = !isNewCanonicalUser;
+        transaction.set(userDocRef, newProfile);
+        console.log(`[PROFILE-MERGE] created=true uid=${uid.slice(-6)} xp=50 welcomeXPAwarded=true`);
+        return {
+          ...newProfile,
+          xp: 50,
+          welcomeXPAwarded: true,
+          welcomeBannerSeen: false
+        };
+      } else {
+        const existingData = userSnap.data();
+        const preservedXP = Number.isFinite(Number(existingData.xp)) ? Number(existingData.xp) : 50;
+        const updatedLinkedProviders = Array.from(new Set([...(existingData.linkedProviders || []), authProvider]));
 
-      const newProfile = {
-        uid: uid,
-        email: firebaseUser.email || '',
-        emailNormalized: emailNorm,
-        preferredDisplayName: options.preferredDisplayName || firebaseUser.displayName || (emailNorm ? emailNorm.split('@')[0] : 'Explorer'),
-        googleDisplayName: firebaseUser.displayName || '',
-        googlePhotoURL: authProvider === 'google.com' ? (firebaseUser.photoURL || '') : '',
-        passwordProfilePhotoURL: '',
-        activeAuthProvider: authProvider,
-        linkedProviders: [authProvider],
-        xp: preservedXP,
-        rank: 'Novice Explorer',
-        welcomeXPAwarded: welcomeXPAwarded,
-        welcomeXPAwardedAt: serverTimestamp(),
-        welcomeBannerSeen: welcomeBannerSeen,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
-      };
+        const updates = {
+          emailNormalized: emailNorm,
+          activeAuthProvider: authProvider,
+          linkedProviders: updatedLinkedProviders,
+          welcomeXPAwarded: existingData.welcomeXPAwarded ?? true,
+          welcomeBannerSeen: existingData.welcomeBannerSeen ?? true,
+          updatedAt: serverTimestamp()
+        };
 
-      await setDoc(userDocRef, newProfile);
-      console.log(`[PROFILE-MERGE] created=true preservedXP=${!isNewCanonicalUser}`);
-      console.log(`[WELCOME-XP] eligible=${isNewCanonicalUser} awarded=${isNewCanonicalUser} reason=${isNewCanonicalUser ? 'new_canonical_user' : 'existing_session_preservation'}`);
-
-      return {
-        ...newProfile,
-        xp: preservedXP,
-        welcomeXPAwarded: true,
-        welcomeBannerSeen: welcomeBannerSeen
-      };
-    } else {
-      const existingData = userSnap.data();
-      const preservedXP = Number.isFinite(Number(existingData.xp)) ? Number(existingData.xp) : 0;
-
-      const welcomeXPAwarded = existingData.welcomeXPAwarded ?? true;
-      const welcomeBannerSeen = existingData.welcomeBannerSeen ?? true;
-      const updatedLinkedProviders = Array.from(new Set([...(existingData.linkedProviders || []), authProvider]));
-
-      const updates = {
-        emailNormalized: emailNorm,
-        activeAuthProvider: authProvider,
-        linkedProviders: updatedLinkedProviders,
-        welcomeXPAwarded: welcomeXPAwarded,
-        welcomeBannerSeen: welcomeBannerSeen,
-        updatedAt: serverTimestamp()
-      };
-
-      if (options.preferredDisplayName) {
-        updates.preferredDisplayName = options.preferredDisplayName;
-      } else if (!existingData.preferredDisplayName) {
-        updates.preferredDisplayName = existingData.googleDisplayName || firebaseUser.displayName || (emailNorm ? emailNorm.split('@')[0] : 'Explorer');
-      }
-
-      if (authProvider === 'google.com' && firebaseUser.photoURL) {
-        updates.googlePhotoURL = firebaseUser.photoURL;
-        if (firebaseUser.displayName) {
-          updates.googleDisplayName = firebaseUser.displayName;
+        if (options.preferredDisplayName) {
+          updates.preferredDisplayName = options.preferredDisplayName;
+        } else if (!existingData.preferredDisplayName) {
+          updates.preferredDisplayName = existingData.googleDisplayName || firebaseUser.displayName || (emailNorm ? emailNorm.split('@')[0] : 'Explorer');
         }
+
+        if (authProvider === 'google.com' && firebaseUser.photoURL) {
+          updates.googlePhotoURL = firebaseUser.photoURL;
+          if (firebaseUser.displayName) {
+            updates.googleDisplayName = firebaseUser.displayName;
+          }
+        }
+
+        transaction.update(userDocRef, updates);
+        console.log(`[PROFILE-MERGE] created=false uid=${uid.slice(-6)} preservedXP=${preservedXP}`);
+        return {
+          ...existingData,
+          ...updates,
+          xp: preservedXP
+        };
       }
+    });
 
-      await setDoc(userDocRef, updates, { merge: true });
-      console.log(`[PROFILE-MERGE] created=false preservedXP=true`);
-      console.log(`[WELCOME-XP] eligible=false awarded=false reason=existing_user`);
-
-      return {
-        ...existingData,
-        ...updates,
-        xp: preservedXP
-      };
-    }
+    return resultProfile;
   } catch (err) {
     console.error(`[PROFILE-SYNC] stage=error code=${err?.code || 'firestore_error'} message=${err?.message || err}`);
-    return null;
+    const cachedLocal = window.getStoredUserProfile(uid);
+    return cachedLocal || {
+      uid: uid,
+      email: firebaseUser.email || '',
+      emailNormalized: emailNorm,
+      preferredDisplayName: options.preferredDisplayName || firebaseUser.displayName || (emailNorm ? emailNorm.split('@')[0] : 'Explorer'),
+      googleDisplayName: firebaseUser.displayName || '',
+      googlePhotoURL: firebaseUser.photoURL || '',
+      xp: 50,
+      rank: 'Novice Explorer',
+      welcomeXPAwarded: true,
+      welcomeBannerSeen: false,
+      isFallback: true
+    };
   }
 };
 
 window.syncCanonicalProfileAsync = async function (firebaseUser, authProvider, options = {}) {
   if (!firebaseUser || !firebaseUser.uid) return;
-  console.log(`[PROFILE-SYNC] stage=start attempt=${window.state?.authAttempt?.id}`);
+  const requestedUid = firebaseUser.uid;
+  const targetGeneration = window.state?.authGeneration || 0;
+
+  console.log(`[PROFILE-SYNC] stage=start uid=${requestedUid.slice(-6)} gen=${targetGeneration}`);
   try {
     const profile = await window.resolveCanonicalUserProfile(firebaseUser, authProvider, options);
-    if (profile && window.state?.user?.uid === firebaseUser.uid) {
-      window.state.user.xp = Number.isFinite(Number(profile.xp)) ? Number(profile.xp) : window.state.user.xp;
-      window.state.user.preferredDisplayName = profile.preferredDisplayName || window.state.user.preferredDisplayName;
-      window.state.user.googlePhotoURL = profile.googlePhotoURL || window.state.user.googlePhotoURL;
-      window.state.user.welcomeXPAwarded = profile.welcomeXPAwarded ?? true;
-      window.state.user.welcomeBannerSeen = profile.welcomeBannerSeen ?? true;
-      localStorage.setItem('yathralanka_current_user', JSON.stringify(window.state.user));
-      console.log(`[PROFILE-SYNC] stage=success attempt=${window.state?.authAttempt?.id}`);
-    } else if (!profile) {
+
+    // GUARD: Ensure current Firebase user and auth generation still match!
+    if (auth?.currentUser?.uid !== requestedUid || window.state?.authGeneration !== targetGeneration) {
+      console.log(`[PROFILE-SYNC] Stale profile write ignored for ${requestedUid.slice(-6)}`);
+      return;
+    }
+
+    if (profile) {
+      const activeUser = window.state.user || {};
+      activeUser.xp = Number.isFinite(Number(profile.xp)) ? Number(profile.xp) : (activeUser.xp || 50);
+      activeUser.preferredDisplayName = profile.preferredDisplayName || activeUser.preferredDisplayName;
+      activeUser.googlePhotoURL = profile.googlePhotoURL || activeUser.googlePhotoURL;
+      activeUser.welcomeXPAwarded = profile.welcomeXPAwarded ?? true;
+      activeUser.welcomeBannerSeen = profile.welcomeBannerSeen ?? true;
+      activeUser.profileStatus = "ready";
+
+      window.state.user = activeUser;
+      window.state.currentUser = activeUser;
+      window.saveStoredUserProfile(requestedUid, activeUser);
+
+      // Rerender UI elements with resolved profile
+      const userNameEl = document.querySelector('.user-display-name, #profile-user-name');
+      if (userNameEl) userNameEl.textContent = activeUser.preferredDisplayName;
+
+      const xpEls = document.querySelectorAll('.user-xp-display, .profile-xp-badge');
+      xpEls.forEach(el => { el.textContent = `${activeUser.xp} pts`; });
+
+      console.log(`[PROFILE-SYNC] stage=success uid=${requestedUid.slice(-6)} xp=${activeUser.xp}`);
+    } else {
       console.warn(`[PROFILE-SYNC] stage=error message=profile_null_non_blocking`);
-      if (typeof window.showNotification === 'function') {
-        window.showNotification("Signed in successfully. Some profile information could not be synchronized yet.", "info");
-      }
     }
   } catch (err) {
     console.error(`[PROFILE-SYNC] stage=error code=${err?.code || 'sync_failed'} message=${err?.message || err}`);
-    if (typeof window.showNotification === 'function') {
-      window.showNotification("Signed in successfully. Some profile information could not be synchronized yet.", "info");
-    }
   }
 };
 
@@ -413,11 +520,10 @@ window.handlePostAuthUserSuccess = async function ({ firebaseUser, authProvider,
 
   const uid = firebaseUser.uid;
   const emailNorm = window.normalizeEmail(firebaseUser.email);
-  console.log(`[IDENTITY] provider=${authProvider} canonicalUidPresent=true attempt=${attemptId || window.state?.authAttempt?.id || 'none'}`);
+  console.log(`[IDENTITY] provider=${authProvider} canonicalUidPresent=true uid=${uid.slice(-6)} attempt=${attemptId || window.state?.authAttempt?.id || 'none'}`);
 
-  // 1. Construct Immediate Safe In-Memory Session
-  const cachedUser = (window.state?.user?.uid === uid) ? window.state.user : JSON.parse(localStorage.getItem('yathralanka_current_user') || 'null');
-  const matchingCache = (cachedUser && cachedUser.uid === uid) ? cachedUser : null;
+  // 1. Construct Immediate Safe In-Memory Session via UID-scoped Cache Only
+  const matchingCache = window.getStoredUserProfile(uid);
 
   const preferredName = options.preferredDisplayName || matchingCache?.preferredDisplayName || firebaseUser.displayName || (emailNorm ? emailNorm.split('@')[0] : 'Explorer');
   let displayPhoto = '/assets/royal-avatar.png';
@@ -432,7 +538,7 @@ window.handlePostAuthUserSuccess = async function ({ firebaseUser, authProvider,
   }
   console.log(`[PROFILE-PHOTO] source=${photoSource}`);
 
-  const initialXP = matchingCache && Number.isFinite(Number(matchingCache.xp)) ? Number(matchingCache.xp) : 0;
+  const initialXP = matchingCache && Number.isFinite(Number(matchingCache.xp)) ? Number(matchingCache.xp) : 50;
 
   const userSession = {
     uid,
@@ -450,15 +556,17 @@ window.handlePostAuthUserSuccess = async function ({ firebaseUser, authProvider,
     rank: matchingCache?.rank || 'Novice Explorer',
     welcomeXPAwarded: matchingCache?.welcomeXPAwarded ?? true,
     welcomeBannerSeen: matchingCache?.welcomeBannerSeen ?? true,
-    isGuest: false
+    isGuest: false,
+    profileStatus: matchingCache ? "ready" : "loading"
   };
 
   window.state.user = userSession;
   window.state.currentUser = userSession;
+  window.state.activeUid = uid;
   window.state.isGuest = false;
   window.state.isLoggedIn = true;
 
-  localStorage.setItem('yathralanka_current_user', JSON.stringify(userSession));
+  window.saveStoredUserProfile(uid, userSession);
   localStorage.setItem('yathralanka_logged_in', 'true');
   localStorage.removeItem('yathralanka_session_mode');
 
@@ -504,14 +612,16 @@ function completeVerifiedAuthentication({ attemptId, firebaseUser, userSession }
     attempt.status = 'verified';
   }
   console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=verified`);
+  console.log(`[AUTH-TRACE] attempt=${attemptId} stage=navigation_completed`);
   console.log(`[AUTH-NAV] source=completeVerifiedAuthentication target=home outcome=approved attempt=${attemptId}`);
 
-  localStorage.removeItem('yathralanka_session_mode');
-  localStorage.setItem('yathralanka_current_user', JSON.stringify(userSession));
+  localStorage.setItem('yathralanka_session_mode', 'authenticated');
+  window.saveStoredUserProfile(userSession.uid, userSession);
   localStorage.setItem('yathralanka_logged_in', 'true');
 
   window.state.user = userSession;
   window.state.currentUser = userSession;
+  window.state.activeUid = userSession.uid;
   window.state.isGuest = false;
   window.state.isLoggedIn = true;
 
@@ -913,7 +1023,54 @@ window.initAppRouter = function () {
     return;
   }
 
-  // Fallback: Always display Welcome / Landing screen first on direct access
+  // Deterministic Startup Routing & Timeout Protection
+  const sessionMode = localStorage.getItem('yathralanka_session_mode');
+
+  if (!window.__startupTimeoutHandle) {
+    window.__startupTimeoutHandle = setTimeout(() => {
+      if (!window.__appSettled) {
+        console.warn('[STARTUP-TIMEOUT] Auth did not settle within 6s. Executing fallback routing.');
+        window.__appSettled = true;
+        const currentMode = localStorage.getItem('yathralanka_session_mode');
+        if (currentMode === 'guest') {
+          if (typeof window.continueAsGuest === 'function') window.continueAsGuest();
+        } else if (currentMode === 'authenticated' && auth?.currentUser?.uid) {
+          const uid = auth.currentUser.uid;
+          const cached = window.getStoredUserProfile(uid) || {
+            uid,
+            name: auth.currentUser.displayName || 'Explorer',
+            displayName: auth.currentUser.displayName || 'Explorer',
+            email: auth.currentUser.email || '',
+            xp: 50,
+            rank: 'Novice Explorer',
+            isGuest: false
+          };
+          if (!window.state) window.state = {};
+          window.state.user = cached;
+          window.state.currentUser = cached;
+          window.state.isGuest = false;
+          window.state.isLoggedIn = true;
+          if (typeof window.executeAppNavigation === 'function') window.executeAppNavigation('home');
+        } else {
+          if (typeof window.executeAppNavigation === 'function') window.executeAppNavigation('welcome');
+        }
+      }
+    }, 6000);
+  }
+
+  if (sessionMode === 'authenticated') {
+    console.log('[BOOT] Authenticated session mode detected; waiting for Firebase auth state observer...');
+    return;
+  }
+
+  window.__appSettled = true;
+  if (window.__startupTimeoutHandle) clearTimeout(window.__startupTimeoutHandle);
+
+  if (sessionMode === 'guest') {
+    if (typeof window.continueAsGuest === 'function') window.continueAsGuest();
+    return;
+  }
+
   if (window.state) {
     window.state.user = null;
     window.state.currentUser = null;
@@ -1185,36 +1342,21 @@ window.dismissConfirmationModalToSignIn = window.dismissVerificationModalToSignI
 // 3. DASHBOARD USER HEADER & CONGRATULATORY NEWCOMER BANNER
 // ============================================================================
 window.renderDashboardHeader = function () {
-  const currentUser = window.state?.user ||
-    JSON.parse(localStorage.getItem('yathralanka_current_user') || 'null') ||
-    JSON.parse(localStorage.getItem('yathralanka_active_user') || 'null') ||
-    {};
-  const isNewcomer = currentUser.isNewRegistrant || currentUser.showFirstRewardCard || (sessionStorage.getItem('show_newcomer_banner') === 'true' && (currentUser.dashboard_visits || 1) <= 1);
-
-  if (isNewcomer) {
-    currentUser.isNewRegistrant = false;
-    currentUser.showFirstRewardCard = false;
-    sessionStorage.removeItem('show_newcomer_banner');
-    try {
-      localStorage.setItem('yathralanka_active_user', JSON.stringify(currentUser));
-      localStorage.setItem('yathralanka_current_user', JSON.stringify(currentUser));
-      const usersDb = JSON.parse(localStorage.getItem('yathralanka_users') || '{}');
-      if (currentUser.email && usersDb[currentUser.email]) {
-        usersDb[currentUser.email].isNewRegistrant = false;
-        usersDb[currentUser.email].showFirstRewardCard = false;
-        localStorage.setItem('yathralanka_users', JSON.stringify(usersDb));
-      }
-    } catch (e) { }
-  }
+  const activeUid = auth?.currentUser?.uid || window.state?.user?.uid;
+  const currentUser = (window.state?.user && window.state.user.uid === activeUid)
+    ? window.state.user
+    : (activeUid ? window.getStoredUserProfile(activeUid) : (window.state?.isGuest ? { name: "Guest Explorer", isGuest: true, xp: 0, rank: "Novice Explorer" } : null));
 
   const headerCard = document.querySelector('.dashboard-user-card') || document.getElementById('dashboard-header-slot');
   if (!headerCard) return;
 
-  let displayName = currentUser.name || currentUser.displayName || 'RA';
-  if (currentUser.emailVerified && displayName.toLowerCase() === 'explorer') {
-    displayName = 'RA';
+  if (!currentUser || currentUser.profileStatus === "loading") {
+    headerCard.innerHTML = `<div style="padding:18px 22px; text-align:center; color:#64748B; font-size:13px; font-weight:700;">Loading your explorer profile…</div>`;
+    return;
   }
-  const xpCount = currentUser.xp || 50;
+
+  let displayName = currentUser.preferredDisplayName || currentUser.displayName || currentUser.name || 'Explorer';
+  const xpCount = Number.isFinite(Number(currentUser.xp)) ? Number(currentUser.xp) : 50;
 
   const rankInfo = typeof getRankProgress === 'function' ? getRankProgress(xpCount) : {
     currentRank: { name: 'Novice Explorer' },
@@ -2106,19 +2248,21 @@ window.resolveSiteCoordinates = function (site) {
 // Total Completion Cap per Landmark: 220 XP
 window.recalculateTotalXP = function () {
   if (!window.state) window.state = {};
-  if (!window.state.user) {
-    try {
-      window.state.user = JSON.parse(localStorage.getItem('yathralanka_current_user') || 'null') ||
-        JSON.parse(localStorage.getItem('yathralanka_active_user') || 'null') ||
-        { name: "Explorer", xp: 50 };
-    } catch (e) {
-      window.state.user = { name: "Explorer", xp: 50 };
-    }
+  const currentUid = auth?.currentUser?.uid || window.state?.user?.uid;
+  if (!currentUid || window.state?.isGuest) {
+    const guestXP = window.state?.user?.xp || 0;
+    document.querySelectorAll('.user-xp-display, .profile-xp-badge').forEach(el => {
+      el.textContent = `${guestXP} pts`;
+    });
+    return guestXP;
   }
+
+  const completedSitesKey = window.getCompletedSitesKey(currentUid);
+  const siteProgressKey = window.getSiteProgressKey(currentUid);
 
   let completedSites = {};
   try {
-    const raw = localStorage.getItem('yathralanka_completed_sites');
+    const raw = localStorage.getItem(completedSitesKey);
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
@@ -2129,7 +2273,12 @@ window.recalculateTotalXP = function () {
     }
   } catch (e) { }
 
-  const siteProgress = window.state.siteProgress || JSON.parse(localStorage.getItem('yathra_site_progress') || '{}');
+  let siteProgress = {};
+  try {
+    const rawP = localStorage.getItem(siteProgressKey);
+    if (rawP) siteProgress = JSON.parse(rawP);
+  } catch (e) { }
+
   Object.keys(siteProgress).forEach(sId => {
     const p = siteProgress[sId];
     if (p) {
@@ -2140,33 +2289,32 @@ window.recalculateTotalXP = function () {
     }
   });
 
-  let baseXP = 50; // Initial signup XP
+  let baseXP = Number.isFinite(Number(window.state?.user?.xp)) ? Number(window.state.user.xp) : 50;
+
+  let completionBonus = 0;
   Object.values(completedSites).forEach(siteData => {
     if (typeof siteData === 'object' && siteData !== null) {
-      if (siteData.gps || siteData.gpsVerified) baseXP += 100;
-      if (siteData.photo || siteData.photoVerified) baseXP += 70;
-      if (siteData.quiz || siteData.quizPassed) baseXP += 50;
+      if (siteData.gps || siteData.gpsVerified) completionBonus += 100;
+      if (siteData.photo || siteData.photoVerified) completionBonus += 70;
+      if (siteData.quiz || siteData.quizPassed) completionBonus += 50;
     } else if (siteData) {
-      baseXP += 100;
+      completionBonus += 100;
     }
   });
 
-  window.state.user.xp = baseXP;
-  window.state.xp = baseXP;
+  const totalCalculatedXP = Math.max(baseXP, 50 + completionBonus);
 
-  try {
-    localStorage.setItem('yathralanka_current_user', JSON.stringify(window.state.user));
-    localStorage.setItem('yathralanka_active_user', JSON.stringify(window.state.user));
-    localStorage.setItem('yathra_user_xp', String(baseXP));
-    localStorage.setItem('yathralanka_user_xp', String(baseXP));
-  } catch (e) { }
+  if (window.state.user) {
+    window.state.user.xp = totalCalculatedXP;
+    window.saveStoredUserProfile(currentUid, window.state.user);
+  }
+  window.state.xp = totalCalculatedXP;
 
-  // Refresh UI elements displaying XP
   document.querySelectorAll('.user-xp-display, .profile-xp-badge').forEach(el => {
-    el.textContent = `${baseXP} pts`;
+    el.textContent = `${totalCalculatedXP} pts`;
   });
 
-  return baseXP;
+  return totalCalculatedXP;
 };
 
 window.awardSiteXP = function (siteId, phase) {
@@ -2175,9 +2323,13 @@ window.awardSiteXP = function (siteId, phase) {
 
 window.awardLandmarkXP = function (siteId, phase) {
   if (!window.state) window.state = {};
+  const currentUid = auth?.currentUser?.uid || window.state?.user?.uid;
+  const siteProgressKey = window.getSiteProgressKey(currentUid);
+  const completedSitesKey = window.getCompletedSitesKey(currentUid);
+
   if (!window.state.siteProgress) {
     try {
-      window.state.siteProgress = JSON.parse(localStorage.getItem('yathra_site_progress') || '{}');
+      window.state.siteProgress = JSON.parse(localStorage.getItem(siteProgressKey) || '{}');
     } catch (e) {
       window.state.siteProgress = {};
     }
@@ -2234,38 +2386,21 @@ window.awardLandmarkXP = function (siteId, phase) {
         window.checkAndAwardSmartMedals();
       }
 
-      // Save to yathralanka_completed_sites
       let completedSites = [];
       try {
-        completedSites = JSON.parse(localStorage.getItem('yathralanka_completed_sites') || '[]');
+        completedSites = JSON.parse(localStorage.getItem(completedSitesKey) || '[]');
       } catch (e) { }
       if (!completedSites.includes(sId)) {
         completedSites.push(sId);
       }
       try {
-        localStorage.setItem('yathralanka_completed_sites', JSON.stringify(completedSites));
+        localStorage.setItem(completedSitesKey, JSON.stringify(completedSites));
       } catch (e) { }
 
       try {
-        localStorage.setItem('yathra_site_progress', JSON.stringify(window.state.siteProgress));
-        localStorage.setItem('yathra_user_xp', String(window.state.xp));
-        localStorage.setItem('yathralanka_user_xp', String(window.state.xp));
-
-        const activeUser = JSON.parse(localStorage.getItem('yathralanka_active_user') || 'null') || window.state.user || {};
-        activeUser.xp = window.state.user ? window.state.user.xp : window.state.xp;
-        activeUser.sitesVisited = window.state.user ? window.state.user.sitesVisited : completedSites.length;
-        activeUser.completedSites = completedSites;
-
-        localStorage.setItem('yathralanka_active_user', JSON.stringify(activeUser));
-        localStorage.setItem('yathralanka_current_user', JSON.stringify(activeUser));
-        localStorage.setItem('yathra_current_user', JSON.stringify(activeUser));
-
-        const usersDb = JSON.parse(localStorage.getItem('yathralanka_users') || '{}');
-        if (activeUser.email && usersDb[activeUser.email]) {
-          usersDb[activeUser.email].xp = activeUser.xp;
-          usersDb[activeUser.email].sitesVisited = activeUser.sitesVisited;
-          usersDb[activeUser.email].completedSites = completedSites;
-          localStorage.setItem('yathralanka_users', JSON.stringify(usersDb));
+        localStorage.setItem(siteProgressKey, JSON.stringify(window.state.siteProgress));
+        if (currentUid && window.state.user) {
+          window.saveStoredUserProfile(currentUid, window.state.user);
         }
       } catch (e) { }
 
@@ -3574,11 +3709,10 @@ window.renderProfileScreen = function (params = {}) {
 // ============================================================================
 window.handleSignOut = function () {
   console.log("🔒 Signing out session completely...");
-  localStorage.removeItem('yathralanka_current_user');
-  localStorage.removeItem('yathralanka_active_user');
-  localStorage.removeItem('yathralanka_user');
-  localStorage.removeItem('yathra_current_user');
-  localStorage.removeItem('yathralanka_logged_in');
+  localStorage.setItem('yathralanka_session_mode', 'signed_out');
+  if (typeof window.clearActiveUserSession === 'function') {
+    window.clearActiveUserSession();
+  }
 
   if (typeof signOut === 'function' && auth) {
     try { signOut(auth); } catch (e) {}
@@ -4740,60 +4874,101 @@ function initAuthListener() {
   });
 
   onAuthStateChanged(auth, async (user) => {
+    window.__appSettled = true;
+    if (window.__startupTimeoutHandle) {
+      clearTimeout(window.__startupTimeoutHandle);
+      window.__startupTimeoutHandle = null;
+    }
+
     if (user && user.uid) {
       console.log("👤 Firebase User Authenticated:", user.displayName || user.email, "UID:", user.uid);
-      if (!state) window.state = {};
-      const provider = user.providerData?.[0]?.providerId || 'google.com';
-      const userProfile = await window.resolveCanonicalUserProfile(user, provider);
+      const sessionMode = localStorage.getItem('yathralanka_session_mode');
 
-      if (userProfile) {
-        const preferredName = userProfile.preferredDisplayName || userProfile.googleDisplayName || user.displayName || 'Explorer';
-        let displayPhoto = '/assets/royal-avatar.png';
-        if (provider === 'google.com') {
-          displayPhoto = userProfile.googlePhotoURL || '/assets/royal-avatar.png';
-        } else {
-          displayPhoto = userProfile.passwordProfilePhotoURL || userProfile.googlePhotoURL || '/assets/royal-avatar.png';
+      if (sessionMode === 'guest' || sessionMode === 'signed_out') {
+        console.log(`[AUTH-ROUTING] Session mode is '${sessionMode}'; active guest/signed-out preference preserved.`);
+        if (sessionMode === 'guest') {
+          if (!window.state) window.state = {};
+          window.state.isGuest = true;
+          window.state.isLoggedIn = false;
+          if (window.state.currentScreen === 'welcome' || !window.state.currentScreen) {
+            if (typeof window.executeAppNavigation === 'function') window.executeAppNavigation('home');
+          }
         }
-
-        const sessionObj = {
-          uid: userProfile.uid,
-          name: preferredName,
-          displayName: preferredName,
-          preferredDisplayName: preferredName,
-          email: userProfile.email,
-          emailNormalized: userProfile.emailNormalized,
-          photoURL: displayPhoto,
-          googlePhotoURL: userProfile.googlePhotoURL || '',
-          passwordProfilePhotoURL: userProfile.passwordProfilePhotoURL || '',
-          activeAuthProvider: provider,
-          linkedProviders: userProfile.linkedProviders || [provider],
-          xp: Number.isFinite(Number(userProfile.xp)) ? Number(userProfile.xp) : 0,
-          rank: userProfile.rank || 'Novice Explorer',
-          welcomeXPAwarded: userProfile.welcomeXPAwarded ?? true,
-          welcomeBannerSeen: userProfile.welcomeBannerSeen ?? true,
-          isGuest: false
-        };
-
-        state.currentUser = sessionObj;
-        state.user = sessionObj;
-        state.isGuest = false;
-        state.isLoggedIn = true;
-        localStorage.setItem('yathralanka_current_user', JSON.stringify(sessionObj));
+        return;
       }
+
+      if (!window.state) window.state = {};
+      if (window.state.activeUid && window.state.activeUid !== user.uid) {
+        console.log(`[AUTH-STATE] UID changed from ${window.state.activeUid.slice(-6)} to ${user.uid.slice(-6)}. Clearing session.`);
+        if (typeof window.clearActiveUserSession === 'function') {
+          window.clearActiveUserSession();
+        }
+      }
+
+      window.state.activeUid = user.uid;
+      const cachedProfile = window.getStoredUserProfile(user.uid);
+      const initialUserObj = cachedProfile || {
+        uid: user.uid,
+        name: user.displayName || (user.email ? user.email.split('@')[0] : 'Explorer'),
+        displayName: user.displayName || (user.email ? user.email.split('@')[0] : 'Explorer'),
+        preferredDisplayName: user.displayName || (user.email ? user.email.split('@')[0] : 'Explorer'),
+        email: user.email || '',
+        emailNormalized: window.normalizeEmail(user.email),
+        photoURL: user.photoURL || '/assets/royal-avatar.png',
+        googlePhotoURL: user.photoURL || '',
+        xp: 50,
+        rank: 'Novice Explorer',
+        isGuest: false,
+        profileStatus: "loading"
+      };
+
+      window.state.currentUser = initialUserObj;
+      window.state.user = initialUserObj;
+      window.state.isGuest = false;
+      window.state.isLoggedIn = true;
+      localStorage.setItem('yathralanka_session_mode', 'authenticated');
+      window.saveStoredUserProfile(user.uid, initialUserObj);
+      localStorage.setItem('yathralanka_logged_in', 'true');
+
+      if (window.state.currentScreen === 'welcome' || window.state.currentScreen === 'auth' || !window.state.currentScreen) {
+        console.log('[AUTH-ROUTING] Valid session restored -> Navigating to authenticated Dashboard');
+        if (typeof window.executeAppNavigation === 'function') {
+          window.executeAppNavigation('home');
+        } else if (typeof window.navigate === 'function') {
+          window.navigate('home');
+        }
+      }
+
+      // Background non-blocking profile sync with Firestore
+      const provider = user.providerData?.[0]?.providerId || 'google.com';
+      window.syncCanonicalProfileAsync(user, provider);
     } else {
       console.log("👤 Firebase User Unauthenticated (No active session)");
       if (!window.state) window.state = {};
-      if (!window.state.isGuest) {
-        state.currentUser = null;
-        state.user = null;
-        state.isGuest = true;
-        state.isLoggedIn = false;
+      const sessionMode = localStorage.getItem('yathralanka_session_mode');
+
+      if (sessionMode !== 'guest') {
+        window.state.currentUser = null;
+        window.state.user = null;
+        window.state.isGuest = true;
+        window.state.isLoggedIn = false;
+        localStorage.removeItem('yathralanka_logged_in');
+        if (sessionMode === 'authenticated') {
+          localStorage.removeItem('yathralanka_session_mode');
+        }
+        if (window.state.currentScreen === 'home' || !window.state.currentScreen) {
+          if (typeof window.executeAppNavigation === 'function') {
+            window.executeAppNavigation('welcome');
+          } else if (typeof window.navigate === 'function') {
+            window.navigate('welcome');
+          }
+        }
       }
     }
 
     const userNameEl = document.querySelector('.user-display-name, #profile-user-name');
-    if (userNameEl && state.user && (state.user.preferredDisplayName || state.user.displayName)) {
-      userNameEl.textContent = state.user.preferredDisplayName || state.user.displayName;
+    if (userNameEl && window.state?.user && (window.state.user.preferredDisplayName || window.state.user.displayName)) {
+      userNameEl.textContent = window.state.user.preferredDisplayName || window.state.user.displayName;
     }
   });
 }
@@ -4859,8 +5034,11 @@ window.handleGoogleSignInClick = async function () {
     startedAt: new Date().toISOString()
   };
 
-  console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=tap`);
-  console.log(`[AUTH-STATE] firebaseUidPresent=${Boolean(auth?.currentUser?.uid)} attempt=${attemptId} route=${window.state?.currentScreen}`);
+  // Stage: button_pressed
+  console.log(`[AUTH-TRACE] attempt=${attemptId} stage=button_pressed`);
+  const firebaseUserExisted = Boolean(auth?.currentUser);
+  const preProviderIds = auth?.currentUser?.providerData?.map(p => p.providerId) || [];
+  console.log(`[AUTH-TRACE] attempt=${attemptId} firebaseUserExisted=${firebaseUserExisted} providerIds=${JSON.stringify(preProviderIds)}`);
 
   // Disable Google Sign-In buttons across auth screen & modals
   const googleBtns = document.querySelectorAll('#btn-google-signin, .google-btn, [onclick*="handleGoogleSignIn"]');
@@ -4891,130 +5069,151 @@ window.handleGoogleSignInClick = async function () {
   try {
     const isNative = Boolean(window.Capacitor?.isNativePlatform && window.Capacitor.isNativePlatform());
 
-    // 1. Initialize GoogleAuth safely
-    try {
-      await ensureGoogleAuthInitialized();
-      console.log(`[GOOGLE-CHOOSER] attempt=${attemptId} initialize=success`);
-      window.state.authAttempt.status = 'initializing-success';
-    } catch (initErr) {
-      console.log(`[GOOGLE-CHOOSER] attempt=${attemptId} initialize=failure`);
-      window.state.authAttempt.status = 'failed';
-      cleanup();
-      if (typeof window.showNotification === 'function') {
-        window.showNotification("Google Authentication initialization failed.", "error");
-      }
-      return; // GUARD: STAY ON SIGN IN SCREEN
+    // Stage: firebase_precondition
+    console.log(`[AUTH-TRACE] attempt=${attemptId} stage=firebase_precondition`);
+    if (typeof window.clearActiveUserSession === 'function') {
+      window.clearActiveUserSession();
+    }
+    localStorage.removeItem('yathralanka_session_mode');
+    if (auth && auth.currentUser) {
+      try {
+        await signOut(auth);
+      } catch (signOutErr) {}
     }
 
     if (isNative) {
-      // 2. In native mode, call GoogleAuth.signOut() AFTER initialize to clear cached native session safely
-      console.log(`[GOOGLE-CHOOSER] attempt=${attemptId} nativeSessionClear=start`);
+      // Stage: native_google_signout_started
+      console.log(`[AUTH-TRACE] attempt=${attemptId} stage=native_google_signout_started`);
+      try {
+        await ensureGoogleAuthInitialized();
+      } catch (initErr) {
+        console.log(`[AUTH-TRACE] attempt=${attemptId} stage=native_google_signout_started outcome=failed code=init_failed message=Google Auth initialization failed.`);
+        window.state.authAttempt.status = 'failed';
+        cleanup();
+        if (typeof window.showNotification === 'function') {
+          window.showNotification("Google authentication could not be verified.", "error");
+        }
+        return;
+      }
+
       try {
         await GoogleAuth.signOut();
-        console.log(`[GOOGLE-CHOOSER] attempt=${attemptId} nativeSessionClear=success`);
+        console.log(`[AUTH-TRACE] attempt=${attemptId} stage=native_google_signout_completed`);
       } catch (signOutErr) {
-        console.log(`[GOOGLE-CHOOSER] attempt=${attemptId} nativeSessionClear=failure`);
+        console.log(`[AUTH-TRACE] attempt=${attemptId} stage=native_google_signout_started outcome=failed code=signout_failed message=Failed to clear native session.`);
         window.state.authAttempt.status = 'failed';
         cleanup();
         if (typeof window.showNotification === 'function') {
           window.showNotification("Unable to prepare Google Account Chooser. Please try again.", "error");
         }
-        return; // GUARD: STAY ON SIGN IN SCREEN
+        return;
       }
 
-      console.log(`[GOOGLE-CHOOSER] attempt=${attemptId} selector=start`);
+      // Stage: chooser_started
+      console.log(`[AUTH-TRACE] attempt=${attemptId} stage=chooser_started`);
       window.state.authAttempt.status = 'selecting-account';
       let googleUser = null;
       try {
         googleUser = await GoogleAuth.signIn();
       } catch (signInErr) {
-        console.log(`[GOOGLE-CHOOSER] attempt=${attemptId} selector=cancelled`);
+        console.log(`[AUTH-TRACE] attempt=${attemptId} stage=chooser_started outcome=cancelled code=user_cancelled message=Account selection was cancelled.`);
         window.state.authAttempt.status = 'cancelled';
         cleanup();
         if (typeof window.showNotification === 'function') {
           window.showNotification("Google Sign-In cancelled.", "info");
         }
-        return; // GUARD: STAY ON SIGN IN SCREEN
+        return;
       }
 
       if (!googleUser) {
-        console.log(`[GOOGLE-CHOOSER] attempt=${attemptId} selector=cancelled`);
+        console.log(`[AUTH-TRACE] attempt=${attemptId} stage=chooser_started outcome=cancelled code=user_cancelled message=Account selection was cancelled.`);
         window.state.authAttempt.status = 'cancelled';
         cleanup();
-        return; // GUARD: STAY ON SIGN IN SCREEN
+        return;
       }
 
-      console.log(`[GOOGLE-CHOOSER] attempt=${attemptId} selector=returned`);
+      // Stage: chooser_returned
+      console.log(`[AUTH-TRACE] attempt=${attemptId} stage=chooser_returned`);
       const idToken = googleUser.authentication?.idToken || googleUser.idToken;
+
       if (!idToken) {
-        console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=failed code=no_id_token`);
+        console.log(`[AUTH-TRACE] attempt=${attemptId} stage=id_token_present outcome=failed code=no_token message=Google did not return a valid sign-in token.`);
         window.state.authAttempt.status = 'failed';
         cleanup();
         if (typeof window.showNotification === 'function') {
-          window.showNotification("Google Sign-In failed: No security token returned.", "error");
+          window.showNotification("Google did not return a valid sign-in token. Please try again.", "error");
         }
-        return; // GUARD: STAY ON SIGN IN SCREEN
+        return;
       }
 
+      // Stage: id_token_present
+      console.log(`[AUTH-TRACE] attempt=${attemptId} stage=id_token_present`);
+
+      // Stage: firebase_exchange_started
+      console.log(`[AUTH-TRACE] attempt=${attemptId} stage=firebase_exchange_started`);
       window.state.authAttempt.status = 'exchanging-credential';
       const credential = GoogleAuthProvider.credential(idToken);
 
-      // Provider linking check if currently authenticated with Email/Password
-      if (auth.currentUser && auth.currentUser.providerData?.some(p => p.providerId === 'password')) {
-        console.log(`[PROVIDER-LINK] existing=password pending=google.com status=start`);
-        try {
-          const linkResult = await linkWithCredential(auth.currentUser, credential);
-          console.log(`[PROVIDER-LINK] existing=password pending=google.com status=success`);
-          await window.handlePostAuthUserSuccess({ firebaseUser: linkResult.user, authProvider: 'google.com', attemptId, cleanup });
-          return;
-        } catch (linkErr) {
-          console.error(`[PROVIDER-LINK] existing=password pending=google.com status=failed`, linkErr.code);
-          if (linkErr.code === 'auth/credential-already-in-use') {
-            if (typeof window.showNotification === 'function') {
-              window.showNotification("This Google account is already linked to another user.", "error");
-            }
-          }
-          cleanup();
-          return;
-        }
-      }
-
-      // Normal sign-in with credential
       let credentialResult = null;
       try {
         credentialResult = await signInWithCredential(auth, credential);
       } catch (fbErr) {
+        let code = fbErr.code || 'firebase_exchange_failed';
+        let msg = 'Google authentication could not be verified.';
+        let userMsg = 'Google authentication could not be verified.';
+
         if (fbErr.code === 'auth/account-exists-with-different-credential') {
-          console.log(`[PROVIDER-LINK] existing=password pending=google.com status=requires-reauth`);
+          msg = 'This email already uses another sign-in method. Sign in with your password to connect Google.';
+          userMsg = 'This email already uses another sign-in method. Sign in with your password to connect Google.';
+          console.log(`[AUTH-TRACE] attempt=${attemptId} stage=firebase_exchange_started outcome=failed code=${code} message=${msg}`);
           const extractedEmail = googleUser.email || googleUser.user?.email || '';
           window.state.pendingGoogleCredential = { credential, email: extractedEmail };
           cleanup();
-          window.showReauthPasswordModal();
-          return;
-        } else {
-          console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=failed code=${fbErr.code}`);
-          window.state.authAttempt.status = 'failed';
-          cleanup();
           if (typeof window.showNotification === 'function') {
-            window.showNotification("Firebase authentication failed: " + fbErr.message, "error");
+            window.showNotification(userMsg, "error");
+          }
+          if (typeof window.showReauthPasswordModal === 'function') {
+            window.showReauthPasswordModal();
           }
           return;
+        } else if (fbErr.code === 'auth/network-request-failed') {
+          msg = 'Unable to complete sign-in. Check your connection and try again.';
+          userMsg = 'Unable to complete sign-in. Check your connection and try again.';
         }
+
+        console.log(`[AUTH-TRACE] attempt=${attemptId} stage=firebase_exchange_started outcome=failed code=${code} message=${msg}`);
+        window.state.authAttempt.status = 'failed';
+        cleanup();
+        if (typeof window.showNotification === 'function') {
+          window.showNotification(userMsg, "error");
+        }
+        return;
       }
+
+      // Stage: firebase_exchange_succeeded
+      console.log(`[AUTH-TRACE] attempt=${attemptId} stage=firebase_exchange_succeeded`);
 
       const fbUser = auth?.currentUser || credentialResult?.user;
       if (!fbUser || !fbUser.uid) {
-        console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=failed code=null_firebase_user`);
+        console.log(`[AUTH-TRACE] attempt=${attemptId} stage=firebase_exchange_succeeded outcome=failed code=null_uid message=Google authentication could not be verified.`);
         window.state.authAttempt.status = 'failed';
         cleanup();
-        return; // GUARD: STAY ON SIGN IN SCREEN
+        if (typeof window.showNotification === 'function') {
+          window.showNotification("Google authentication could not be verified.", "error");
+        }
+        return;
       }
 
+      // Stage: session_created
+      console.log(`[AUTH-TRACE] attempt=${attemptId} stage=session_created`);
+
+      // Stage: navigation_started
+      console.log(`[AUTH-TRACE] attempt=${attemptId} stage=navigation_started`);
       await window.handlePostAuthUserSuccess({ firebaseUser: fbUser, authProvider: 'google.com', attemptId, cleanup });
       return;
     } else {
       // WEB PLATFORM FLOW
-      console.log(`[GOOGLE-CHOOSER] attempt=${attemptId} selector=start`);
+      console.log(`[AUTH-TRACE] attempt=${attemptId} stage=chooser_started`);
       window.state.authAttempt.status = 'selecting-account';
       const provider = new GoogleAuthProvider();
       provider.setCustomParameters({ prompt: 'select_account' });
@@ -5022,30 +5221,41 @@ window.handleGoogleSignInClick = async function () {
       let result = null;
       try {
         result = await signInWithPopup(auth, provider);
-        console.log(`[GOOGLE-CHOOSER] attempt=${attemptId} selector=returned`);
+        console.log(`[AUTH-TRACE] attempt=${attemptId} stage=chooser_returned`);
       } catch (popupErr) {
-        console.log(`[GOOGLE-CHOOSER] attempt=${attemptId} selector=cancelled`);
+        console.log(`[AUTH-TRACE] attempt=${attemptId} stage=chooser_started outcome=cancelled code=user_cancelled message=Account selection was cancelled.`);
         window.state.authAttempt.status = 'cancelled';
         cleanup();
+        if (typeof window.showNotification === 'function') {
+          window.showNotification("Google Sign-In cancelled.", "info");
+        }
         return;
       }
 
       const fbUser = result?.user || auth?.currentUser;
       if (!fbUser || !fbUser.uid) {
-        console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=failed code=null_web_user`);
+        console.log(`[AUTH-TRACE] attempt=${attemptId} stage=firebase_exchange_started outcome=failed code=null_web_user message=Google authentication could not be verified.`);
         window.state.authAttempt.status = 'failed';
         cleanup();
+        if (typeof window.showNotification === 'function') {
+          window.showNotification("Google authentication could not be verified.", "error");
+        }
         return;
       }
 
-      window.state.authAttempt.status = 'exchanging-credential';
+      console.log(`[AUTH-TRACE] attempt=${attemptId} stage=firebase_exchange_succeeded`);
+      console.log(`[AUTH-TRACE] attempt=${attemptId} stage=session_created`);
+      console.log(`[AUTH-TRACE] attempt=${attemptId} stage=navigation_started`);
       await window.handlePostAuthUserSuccess({ firebaseUser: fbUser, authProvider: 'google.com', attemptId, cleanup });
       return;
     }
   } catch (error) {
-    console.log(`[AUTH-RUNTIME] attempt=${attemptId} stage=failed code=exception message=${error?.message || error}`);
+    console.log(`[AUTH-TRACE] attempt=${attemptId} stage=firebase_exchange_started outcome=failed code=exception message=${error?.message || error}`);
     if (window.state?.authAttempt) window.state.authAttempt.status = 'failed';
     cleanup();
+    if (typeof window.showNotification === 'function') {
+      window.showNotification("Google authentication could not be verified.", "error");
+    }
   }
 };
 window.handleGoogleSignIn = window.handleGoogleSignInClick;
