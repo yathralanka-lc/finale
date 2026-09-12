@@ -2388,7 +2388,7 @@ window.getShortSiteName = function (site) {
 // Comprehensive Coordinate Registry for all Yathra Lanka Heritage & Gem Sites
 const SITE_COORDINATES_MAP = {
   // Heritage Trail
-  bmich: { lat: 6.90176, lng: 79.87282 },
+  bmich: { lat: 6.9016667, lng: 79.8727778 },
   colombo_museum: { lat: 6.91041, lng: 79.86097 },
   national_museum: { lat: 6.91041, lng: 79.86097 },
   independence_memorial_hall: { lat: 6.90413, lng: 79.86758 },
@@ -7712,8 +7712,8 @@ function getDirectoryDataset() {
       xp: 50,
       image: '/Element%20Pictures/BMICH%20photo.jpg',
       description: 'A landmark convention centre in Colombo known for its national, civic, and cultural importance.',
-      latitude: 6.9016,
-      longitude: 79.8726
+      latitude: 6.9016667,
+      longitude: 79.8727778
     },
     {
       id: 'sigiriya',

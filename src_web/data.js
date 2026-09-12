@@ -417,8 +417,8 @@ export const sitesData = [
     openStatus: "Open now",
     description: "Gifted by the People's Republic of China in memory of Prime Minister S.W.R.D. Bandaranaike, BMICH is Asia's first purpose-built conference center, featuring grand octagonal architecture and lotus-inspired design.",
     image: "/Element%20Pictures/BMICH%20photo.jpg",
-    latitude: 6.90176,
-    longitude: 79.87282,
+    latitude: 6.9016667,
+    longitude: 79.8727778,
     referenceImage: "/Element%20Pictures/BMICH%20photo.jpg",
     verificationOptions: [
       {
