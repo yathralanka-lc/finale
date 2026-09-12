@@ -3113,6 +3113,17 @@ function initApp() {
 
 // --- INITIALIZATION ---
 document.addEventListener('DOMContentLoaded', () => {
+  // A Firebase redirect is completed after a full page reload. Preserve that
+  // transaction so the normal cold-start policy does not sign the returning
+  // Google user out before getRedirectResult() can finish.
+  if (sessionStorage.getItem('yathralanka_google_redirect_pending')) {
+    window.__freshBootHandled = true;
+    window.__startupSessionPolicyComplete = true;
+    if (!window.state) window.state = {};
+    window.state.sessionAuthorized = false;
+    window.state.authTransition = 'google-redirect-return';
+  }
+
   initApp();
   initAuthListener();
 
@@ -5101,16 +5112,31 @@ function initAuthListener() {
 
   if (typeof auth === 'undefined' || !auth) return;
 
-  getRedirectResult(auth).then((result) => {
+  getRedirectResult(auth).then(async (result) => {
     if (result && result.user) {
-      state.isGuest = false;
-      if (typeof window.handleGoogleUserSuccess === 'function') {
-        window.handleGoogleUserSuccess(result.user);
+      sessionStorage.removeItem('yathralanka_google_redirect_pending');
+      window.state.authTransition = null;
+      await window.handlePostAuthUserSuccess({
+        firebaseUser: result.user,
+        authProvider: 'google.com'
+      });
+      if (typeof window.showNotification === 'function') {
+        window.showNotification("Google authentication verified!", "success");
       }
-      handleAuthUserSuccess(result.user, "Google Authentication verified!");
+    } else if (sessionStorage.getItem('yathralanka_google_redirect_pending')) {
+      sessionStorage.removeItem('yathralanka_google_redirect_pending');
+      window.state.authTransition = null;
+      if (typeof window.showNotification === 'function') {
+        window.showNotification("Google sign-in did not complete. Please try again.", "error");
+      }
     }
   }).catch((err) => {
-    console.warn("Auth redirect result check error:", err);
+    sessionStorage.removeItem('yathralanka_google_redirect_pending');
+    if (window.state) window.state.authTransition = null;
+    console.error("Auth redirect result check error:", err?.code, err?.message);
+    if (typeof window.showNotification === 'function') {
+      window.showNotification(window.getGoogleAuthErrorMessage(err), "error");
+    }
   });
 
   onAuthStateChanged(auth, async (user) => {
@@ -5276,6 +5302,35 @@ function ensureGoogleAuthInitialized() {
   return googleAuthInitPromise;
 }
 window.ensureGoogleAuthInitialized = ensureGoogleAuthInitialized;
+
+window.getGoogleAuthErrorMessage = function (error) {
+  const code = error?.code || '';
+  if (code === 'auth/popup-blocked') {
+    return 'The browser blocked Google sign-in. Allow pop-ups for this site and try again.';
+  }
+  if (code === 'auth/unauthorized-domain') {
+    return 'Google sign-in is not authorized for this website address.';
+  }
+  if (code === 'auth/network-request-failed') {
+    return 'Unable to reach Google. Check your connection and try again.';
+  }
+  if (code === 'auth/web-storage-unsupported') {
+    return 'Google sign-in needs cookies and site storage. Please allow them and try again.';
+  }
+  if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+    return 'Google sign-in was cancelled.';
+  }
+  return 'Google sign-in could not be completed. Please try again.';
+};
+
+async function beginGoogleRedirect(provider, attemptId, cleanup) {
+  sessionStorage.setItem('yathralanka_google_redirect_pending', JSON.stringify({
+    attemptId,
+    startedAt: new Date().toISOString()
+  }));
+  if (cleanup) cleanup();
+  await signInWithRedirect(auth, provider);
+}
 
 window.handleGoogleSignInClick = async function () {
   if (window.state?.isAuthenticating) {
@@ -5509,17 +5564,39 @@ window.handleGoogleSignInClick = async function () {
       const provider = new GoogleAuthProvider();
       provider.setCustomParameters({ prompt: 'select_account' });
 
+      // Firebase recommends redirect sign-in on phones, where popup windows are
+      // commonly blocked or detached from the original browser tab.
+      const mobileWeb = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) ||
+        (window.matchMedia && window.matchMedia('(max-width: 767px)').matches);
+      if (mobileWeb) {
+        console.log(`[AUTH-TRACE] attempt=${attemptId} stage=redirect_started reason=mobile_web`);
+        await beginGoogleRedirect(provider, attemptId, cleanup);
+        return;
+      }
+
       let result = null;
       try {
         result = await signInWithPopup(auth, provider);
         console.log(`[AUTH-TRACE] attempt=${attemptId} stage=chooser_returned`);
       } catch (popupErr) {
-        console.log(`[AUTH-TRACE] attempt=${attemptId} stage=chooser_started outcome=cancelled code=user_cancelled message=Account selection was cancelled.`);
-        window.updateAuthAttempt(attemptId, 'cancelled');
+        const popupCode = popupErr?.code || 'unknown_popup_error';
+        const shouldRedirect = popupCode === 'auth/popup-blocked' ||
+          popupCode === 'auth/operation-not-supported-in-this-environment';
+
+        console.error(`[AUTH-TRACE] attempt=${attemptId} stage=chooser_failed code=${popupCode}`, popupErr);
+
+        if (shouldRedirect) {
+          console.log(`[AUTH-TRACE] attempt=${attemptId} stage=redirect_started reason=${popupCode}`);
+          await beginGoogleRedirect(provider, attemptId, cleanup);
+          return;
+        }
+
+        const cancelled = popupCode === 'auth/popup-closed-by-user' || popupCode === 'auth/cancelled-popup-request';
+        window.updateAuthAttempt(attemptId, cancelled ? 'cancelled' : 'failed');
         cleanup();
         if (typeof window.clearAuthTransaction === 'function') window.clearAuthTransaction();
         if (typeof window.showNotification === 'function') {
-          window.showNotification("Google Sign-In cancelled.", "info");
+          window.showNotification(window.getGoogleAuthErrorMessage(popupErr), cancelled ? "info" : "error");
         }
         return;
       }
