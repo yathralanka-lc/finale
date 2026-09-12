@@ -5702,6 +5702,182 @@ body.modal-active .global-bottom-nav,
   pointer-events: none !important;
 }
 
+/* ===========================================================================
+   RESPONSIVE WEB CANVAS
+   Desktop browsers use the complete viewport; mobile and native builds remain
+   edge-to-edge and reflow automatically when the device orientation changes.
+   ========================================================================== */
+@media (min-width: 801px) and (min-height: 701px) {
+  html,
+  body {
+    width: 100vw !important;
+    min-width: 100vw !important;
+    max-width: 100vw !important;
+    height: 100vh !important;
+    min-height: 100vh !important;
+    max-height: 100vh !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+  }
+
+  body:not(.is-mobile) #app,
+  body:not(.is-mobile) .phone-frame,
+  body:not(.is-mobile) #app-container,
+  body:not(.is-mobile) .screen-viewport,
+  body:not(.is-mobile) #screen-viewport,
+  body:not(.is-mobile) .dashboard-screen,
+  body:not(.is-mobile) .iphone-chassis,
+  body:not(.is-mobile) .app-viewport {
+    width: 100vw !important;
+    min-width: 100vw !important;
+    max-width: 100vw !important;
+    height: 100vh !important;
+    min-height: 100vh !important;
+    max-height: 100vh !important;
+    margin: 0 !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    transform: none !important;
+  }
+
+  body:not(.is-mobile) .phone-notch-bar,
+  body:not(.is-mobile) .phone-notch-pill,
+  body:not(.is-mobile) .dynamic-island,
+  body:not(.is-mobile) .iphone-dynamic-island,
+  body:not(.is-mobile) .phone-notch,
+  body:not(.is-mobile) .phone-home-indicator,
+  body:not(.is-mobile) .iphone-home-indicator {
+    display: none !important;
+  }
+
+  body:not(.is-mobile) .screen,
+  body:not(.is-mobile) .directory-screen,
+  body:not(.is-mobile) .site-detail-screen,
+  body:not(.is-mobile) .dashboard-screen {
+    width: 100% !important;
+    max-width: none !important;
+    height: 100% !important;
+    border-radius: 0 !important;
+  }
+
+  body:not(.is-mobile) .yl-welcome-screen {
+    display: grid !important;
+    grid-template-columns: minmax(360px, 1fr) minmax(420px, 1fr);
+    grid-template-rows: 1fr;
+    column-gap: clamp(48px, 8vw, 150px);
+    align-items: center !important;
+    justify-items: center !important;
+    justify-content: center !important;
+    padding: clamp(48px, 7vw, 110px) !important;
+  }
+
+  body:not(.is-mobile) .yl-welcome-logo-zone {
+    grid-column: 1;
+    width: 100% !important;
+    height: 100% !important;
+    min-height: 0 !important;
+  }
+
+  body:not(.is-mobile) .yl-welcome-logo-zone img {
+    width: clamp(330px, 35vw, 540px) !important;
+    max-width: 100% !important;
+    max-height: min(68vh, 620px) !important;
+  }
+
+  body:not(.is-mobile) .yl-welcome-actions {
+    grid-column: 2;
+    width: min(100%, 500px) !important;
+    max-width: 500px !important;
+    margin: 0 !important;
+    align-self: center;
+  }
+
+  body:not(.is-mobile) .yl-welcome-actions h1 {
+    font-size: clamp(42px, 4.2vw, 68px) !important;
+  }
+
+  body:not(.is-mobile) .yl-welcome-actions h1 + p {
+    margin-bottom: 28px !important;
+    font-size: 18px !important;
+  }
+
+  body:not(.is-mobile) .yl-welcome-actions button {
+    min-height: 54px !important;
+    font-size: 16px !important;
+  }
+
+  body:not(.is-mobile) #directory-grid-container {
+    grid-template-columns: repeat(4, minmax(220px, 1fr)) !important;
+    gap: 20px !important;
+  }
+
+  body:not(.is-mobile) .directory-card-thumb-wrapper {
+    height: clamp(150px, 19vw, 230px) !important;
+  }
+
+  body:not(.is-mobile) .yl-rewards-grid {
+    grid-template-columns: repeat(3, minmax(240px, 1fr));
+    gap: 20px;
+    padding-left: clamp(24px, 4vw, 72px);
+    padding-right: clamp(24px, 4vw, 72px);
+  }
+
+  body:not(.is-mobile) .auth-screen-container > div,
+  body:not(.is-mobile) .yl-dialog {
+    max-width: 520px !important;
+  }
+}
+
+@media (orientation: landscape) and (max-height: 700px) {
+  .yl-welcome-screen {
+    display: grid !important;
+    grid-template-columns: minmax(180px, 42%) minmax(280px, 1fr);
+    grid-template-rows: 1fr;
+    column-gap: clamp(20px, 5vw, 64px);
+    padding: max(env(safe-area-inset-top), 16px) max(env(safe-area-inset-right), 28px)
+      max(env(safe-area-inset-bottom), 16px) max(env(safe-area-inset-left), 28px) !important;
+  }
+
+  .yl-welcome-logo-zone {
+    grid-column: 1;
+    width: 100% !important;
+    height: 100% !important;
+  }
+
+  .yl-welcome-logo-zone img {
+    width: min(34vw, 220px) !important;
+    max-height: 72vh !important;
+  }
+
+  .yl-welcome-actions {
+    grid-column: 2;
+    width: min(100%, 360px) !important;
+    max-width: 360px !important;
+    margin: 0 !important;
+    align-self: center;
+  }
+
+  .yl-welcome-actions h1 {
+    font-size: clamp(26px, 5vw, 38px) !important;
+  }
+
+  .yl-welcome-actions h1 + p {
+    margin-bottom: 10px !important;
+  }
+
+  .yl-welcome-actions button {
+    min-height: 40px !important;
+  }
+
+  #directory-grid-container {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  }
+}
+
 #camera-viewfinder-root, 
 #photo-match-camera-screen, 
 #target-framing-screen, 
