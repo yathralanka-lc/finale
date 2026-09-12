@@ -104,11 +104,32 @@ export const sitesData = [
     openStatus: "Open now",
     description: "Built to commemorate the independence of Sri Lanka from British rule in 1948, featuring traditional Kandyan architectural stonework and 60 carved stone lions.",
     image: "/Element%20Pictures/Independence%20Memorial%20Hall.jpg",
-    // Temporary physical-device proximity testing location. Do not replace with production coordinates until testing is complete.
-    locationMode: 'test',
-    latitude: 6.846738,
-    longitude: 79.993303,
+    latitude: 6.90413,
+    longitude: 79.86758,
     referenceImage: "/assets/images/independence_hall.webp",
+    verificationOptions: [
+      {
+        number: 1,
+        title: "Independence Hall Front View",
+        description: "Match the full memorial hall frontage. The reference stays in its original landscape orientation and spans the left and right edges.",
+        image: "/assets/images/independence_option_1.jpg",
+        fitAxis: "horizontal"
+      },
+      {
+        number: 2,
+        title: "Independence Hall Colonnade",
+        description: "Match the interior column perspective. The reference stays in its original landscape orientation and spans the left and right edges.",
+        image: "/assets/images/independence_option_2.jpg",
+        fitAxis: "horizontal"
+      },
+      {
+        number: 3,
+        title: "Independence Memorial Museum Sign",
+        description: "Match the multilingual museum sign and surrounding stonework. The reference stays in its original landscape orientation and spans the left and right edges.",
+        image: "/assets/images/independence_option_3.jpg",
+        fitAxis: "horizontal"
+      }
+    ],
     checkpoints: [
       {
         id: "independence_hall_columns",
@@ -138,9 +159,32 @@ export const sitesData = [
     openStatus: "Open now",
     description: "Established in 1877, the National Museum of Colombo is the largest museum in Sri Lanka, housing ancient regalia including the throne and crown of the Kandyan monarchs.",
     image: "/Element%20Pictures/National%20Museum%20-%20Colombo.jpg",
-    latitude: 6.9044,
-    longitude: 79.8606,
+    latitude: 6.91041,
+    longitude: 79.86097,
     referenceImage: "/Element%20Pictures/National%20Museum%20-%20Colombo.jpg",
+    verificationOptions: [
+      {
+        number: 1,
+        title: "Museum Front Elevation",
+        description: "Match the full National Museum frontage. The reference stays in its original landscape orientation and spans the left and right edges.",
+        image: "/assets/images/museum_option_1.jpg",
+        fitAxis: "horizontal"
+      },
+      {
+        number: 2,
+        title: "Museum Side Entrance",
+        description: "Match the side entrance and arches. The reference stays in its original landscape orientation and spans the left and right edges.",
+        image: "/assets/images/museum_option_2.jpg",
+        fitAxis: "horizontal"
+      },
+      {
+        number: 3,
+        title: "Museum Upper Colonnade",
+        description: "Match the vertical colonnade view. The reference stays in its original portrait orientation and spans the top and bottom edges.",
+        image: "/assets/images/museum_option_3.jpg",
+        fitAxis: "vertical"
+      }
+    ],
     checkpoints: [
       {
         id: "colombo_museum_throne",
@@ -373,9 +417,32 @@ export const sitesData = [
     openStatus: "Open now",
     description: "Gifted by the People's Republic of China in memory of Prime Minister S.W.R.D. Bandaranaike, BMICH is Asia's first purpose-built conference center, featuring grand octagonal architecture and lotus-inspired design.",
     image: "/Element%20Pictures/BMICH%20photo.jpg",
-    latitude: 6.9034,
-    longitude: 79.8737,
+    latitude: 6.90176,
+    longitude: 79.87282,
     referenceImage: "/Element%20Pictures/BMICH%20photo.jpg",
+    verificationOptions: [
+      {
+        number: 1,
+        title: "BMICH Main Frontage",
+        description: "Match the complete front elevation and entrance approach. The reference stays in its original orientation and spans the left and right edges.",
+        image: "/assets/images/bmich_option_1.jpg",
+        fitAxis: "horizontal"
+      },
+      {
+        number: 2,
+        title: "BMICH Angled Exterior",
+        description: "Match the angled exterior view and surrounding foreground. The reference stays in its original orientation and spans the top and bottom edges.",
+        image: "/assets/images/bmich_option_2.jpg",
+        fitAxis: "vertical"
+      },
+      {
+        number: 3,
+        title: "BMICH Reflecting Pool Entrance",
+        description: "Match the central entrance, emblem and reflecting pool. The reference stays in its original orientation and spans the left and right edges.",
+        image: "/assets/images/bmich_option_3.jpg",
+        fitAxis: "horizontal"
+      }
+    ],
     checkpoints: [
       {
         id: "bmich_main_hall",
