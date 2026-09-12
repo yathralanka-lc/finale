@@ -5055,7 +5055,8 @@ body.map-active .bottom-nav,
   max-height: 75% !important;
   object-fit: contain !important;
   opacity: 0.35 !important;
-  transform: none !important;
+  transform: scale(var(--verification-overlay-scale, 1)) !important;
+  transform-origin: center center !important;
   filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.9)) !important;
 }
 
@@ -5065,7 +5066,7 @@ body.map-active .bottom-nav,
   object-fit: contain;
   opacity: 0.40;
   pointer-events: none;
-  transition: transform 0.3s ease;
+  transition: transform 0.12s ease;
 }
 
 /* National Museum reference framing rules.
@@ -5086,7 +5087,7 @@ body.map-active .bottom-nav,
   max-width: none !important;
   max-height: none !important;
   object-fit: contain !important;
-  transform: none !important;
+  transform: scale(var(--verification-overlay-scale, 1)) !important;
 }
 
 .verification-reference-image.verification-fit-vertical,
@@ -5096,13 +5097,77 @@ body.map-active .bottom-nav,
   max-width: none !important;
   max-height: none !important;
   object-fit: contain !important;
-  transform: none !important;
+  transform: scale(var(--verification-overlay-scale, 1)) !important;
 }
 
 .ghost-overlay-container.verification-fit-horizontal,
 .ghost-overlay-container.verification-fit-vertical {
   padding: 0 !important;
   overflow: hidden;
+}
+
+.verification-zoom-controls {
+  position: absolute;
+  z-index: 20;
+  left: 50%;
+  bottom: calc(max(env(safe-area-inset-bottom), 30px) + 128px);
+  transform: translateX(-50%);
+  display: grid;
+  grid-template-columns: 42px minmax(120px, 220px) 42px 54px;
+  align-items: center;
+  gap: 8px;
+  width: min(92vw, 390px);
+  padding: 8px 10px;
+  box-sizing: border-box;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 16px;
+  background: rgba(0, 0, 0, 0.62);
+  backdrop-filter: blur(8px);
+  color: #FFFFFF;
+}
+
+.verification-zoom-controls button {
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  border-radius: 50%;
+  background: #0B5A68;
+  color: #FFFFFF;
+  font-size: 25px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.verification-zoom-controls input[type="range"] {
+  width: 100%;
+  accent-color: #F5BE48;
+}
+
+.verification-zoom-controls output {
+  min-width: 48px;
+  color: #FFFFFF;
+  font-size: 12px;
+  font-weight: 800;
+  text-align: center;
+}
+
+@media (max-height: 560px) and (orientation: landscape) {
+  .verification-zoom-controls {
+    left: auto;
+    right: 14px;
+    bottom: 112px;
+    transform: none;
+    grid-template-columns: 38px minmax(90px, 150px) 38px 48px;
+    width: min(54vw, 330px);
+  }
+
+  .verification-zoom-controls button {
+    width: 38px;
+    height: 38px;
+  }
 }
 
 .checkpoint-option-btn {

@@ -12739,6 +12739,7 @@ window.analyzeLandmarkPhoto = async function (video, referenceImageSrc, overlayI
 
   const videoRect = video.getBoundingClientRect();
   const overlayRect = overlayImage?.getBoundingClientRect?.();
+  let referenceCrop = null;
   if (overlayRect && videoRect.width > 0 && videoRect.height > 0 && overlayRect.width > 0 && overlayRect.height > 0) {
     const scale = Math.max(videoRect.width / video.videoWidth, videoRect.height / video.videoHeight);
     const renderedWidth = video.videoWidth * scale;
@@ -12754,6 +12755,12 @@ window.analyzeLandmarkPhoto = async function (video, referenceImageSrc, overlayI
     const sw = Math.min(video.videoWidth - sx, Math.max(1, (right - left) / scale));
     const sh = Math.min(video.videoHeight - sy, Math.max(1, (bottom - top) / scale));
     capturedContext.drawImage(video, sx, sy, sw, sh, 0, 0, sampleSize, sampleSize);
+    referenceCrop = {
+      left: Math.max(0, Math.min(1, (left - overlayRect.left) / overlayRect.width)),
+      top: Math.max(0, Math.min(1, (top - overlayRect.top) / overlayRect.height)),
+      width: Math.max(0.001, Math.min(1, (right - left) / overlayRect.width)),
+      height: Math.max(0.001, Math.min(1, (bottom - top) / overlayRect.height))
+    };
   } else {
     window.drawVerificationCover(capturedContext, video, video.videoWidth, video.videoHeight, sampleSize, sampleSize);
   }
@@ -12763,7 +12770,15 @@ window.analyzeLandmarkPhoto = async function (video, referenceImageSrc, overlayI
   referenceSample.width = sampleSize;
   referenceSample.height = sampleSize;
   const referenceContext = referenceSample.getContext('2d', { willReadFrequently: true });
-  window.drawVerificationCover(referenceContext, referenceImage, referenceImage.naturalWidth, referenceImage.naturalHeight, sampleSize, sampleSize);
+  if (referenceCrop) {
+    const refSx = referenceCrop.left * referenceImage.naturalWidth;
+    const refSy = referenceCrop.top * referenceImage.naturalHeight;
+    const refSw = Math.min(referenceImage.naturalWidth - refSx, referenceCrop.width * referenceImage.naturalWidth);
+    const refSh = Math.min(referenceImage.naturalHeight - refSy, referenceCrop.height * referenceImage.naturalHeight);
+    referenceContext.drawImage(referenceImage, refSx, refSy, refSw, refSh, 0, 0, sampleSize, sampleSize);
+  } else {
+    window.drawVerificationCover(referenceContext, referenceImage, referenceImage.naturalWidth, referenceImage.naturalHeight, sampleSize, sampleSize);
+  }
 
   const capturedFeatures = window.extractVerificationFeatures(capturedContext.getImageData(0, 0, sampleSize, sampleSize), sampleSize, sampleSize);
   const referenceFeatures = window.extractVerificationFeatures(referenceContext.getImageData(0, 0, sampleSize, sampleSize), sampleSize, sampleSize);
@@ -12831,6 +12846,13 @@ window.openPhotoMatchCamera = function (siteId = 'independence_memorial_hall', o
       <img src="${refImgSrc}" id="ghost-overlay-img" class="ghost-overlay-frame ${fitClass}" onerror="this.onerror=null; this.src='/assets/images/independence_hall.webp';" />
     </div>
 
+    <div class="verification-zoom-controls" aria-label="Reference image zoom controls">
+      <button type="button" id="btn-verification-zoom-out" aria-label="Zoom reference image out">−</button>
+      <input type="range" id="verification-zoom-range" min="50" max="250" step="5" value="100" aria-label="Reference image zoom" />
+      <button type="button" id="btn-verification-zoom-in" aria-label="Zoom reference image in">+</button>
+      <output id="verification-zoom-value" for="verification-zoom-range">100%</output>
+    </div>
+
     <!-- Camera Top Bar Controls -->
     <div style="position: relative; z-index: 10; padding: max(env(safe-area-inset-top), 20px) 16px 10px 16px; display: flex; align-items: center; justify-content: space-between; background: linear-gradient(180deg, rgba(0,0,0,0.7) 0%, transparent 100%);">
       <button id="btn-close-match-camera" style="background: rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.3); color: #FFF; border-radius: 10px; padding: 8px 14px; font-weight: 800; font-size: 13px; cursor: pointer;">
@@ -12844,7 +12866,7 @@ window.openPhotoMatchCamera = function (siteId = 'independence_memorial_hall', o
     <!-- Camera Bottom Action Area: Single Physical Circular Shutter Button ONLY -->
     <div style="position: absolute; bottom: 0; left: 0; right: 0; z-index: 10; padding: 20px 16px max(env(safe-area-inset-bottom), 30px) 16px; background: linear-gradient(0deg, rgba(0,0,0,0.85) 0%, transparent 100%); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;">
       <p style="color: #FFFFFF; font-size: 12px; margin: 0; text-shadow: 0 2px 4px rgba(0,0,0,0.8); font-weight: 600;">
-        Align monument with translucent guide & tap shutter to snap
+        Pinch or use −/+ to resize the guide, align the monument, then tap shutter
       </p>
 
       <!-- Physical Circular Shutter Button -->
@@ -12859,6 +12881,48 @@ window.openPhotoMatchCamera = function (siteId = 'independence_memorial_hall', o
   `;
 
   document.body.appendChild(cameraModal);
+
+  const overlayImage = document.getElementById('ghost-overlay-img');
+  const zoomRange = document.getElementById('verification-zoom-range');
+  const zoomValue = document.getElementById('verification-zoom-value');
+  const zoomOutButton = document.getElementById('btn-verification-zoom-out');
+  const zoomInButton = document.getElementById('btn-verification-zoom-in');
+  let verificationZoom = 1;
+  let pinchStartDistance = 0;
+  let pinchStartZoom = 1;
+
+  const applyVerificationZoom = (nextZoom) => {
+    verificationZoom = Math.max(0.5, Math.min(2.5, Number(nextZoom) || 1));
+    if (overlayImage) overlayImage.style.setProperty('--verification-overlay-scale', verificationZoom.toFixed(2));
+    if (zoomRange) zoomRange.value = String(Math.round(verificationZoom * 100));
+    if (zoomValue) zoomValue.textContent = `${Math.round(verificationZoom * 100)}%`;
+  };
+  const touchDistance = (touches) => Math.hypot(
+    touches[0].clientX - touches[1].clientX,
+    touches[0].clientY - touches[1].clientY
+  );
+
+  zoomRange?.addEventListener('input', event => applyVerificationZoom(Number(event.target.value) / 100));
+  zoomOutButton?.addEventListener('click', () => applyVerificationZoom(verificationZoom - 0.1));
+  zoomInButton?.addEventListener('click', () => applyVerificationZoom(verificationZoom + 0.1));
+  cameraModal.addEventListener('wheel', event => {
+    event.preventDefault();
+    applyVerificationZoom(verificationZoom + (event.deltaY < 0 ? 0.1 : -0.1));
+  }, { passive: false });
+  cameraModal.addEventListener('touchstart', event => {
+    if (event.touches.length !== 2) return;
+    pinchStartDistance = touchDistance(event.touches);
+    pinchStartZoom = verificationZoom;
+  }, { passive: true });
+  cameraModal.addEventListener('touchmove', event => {
+    if (event.touches.length !== 2 || !pinchStartDistance) return;
+    event.preventDefault();
+    applyVerificationZoom(pinchStartZoom * (touchDistance(event.touches) / pinchStartDistance));
+  }, { passive: false });
+  cameraModal.addEventListener('touchend', event => {
+    if (event.touches.length < 2) pinchStartDistance = 0;
+  }, { passive: true });
+  applyVerificationZoom(1);
 
   function enforceCameraLayout() {
     const container = document.getElementById('camera-viewfinder-root') || document.querySelector('.camera-viewfinder-root');
@@ -12894,7 +12958,7 @@ window.openPhotoMatchCamera = function (siteId = 'independence_memorial_hall', o
   window.checkAndRotateSilhouette = function () {
     const overlay = document.getElementById('ghost-overlay-img') || document.getElementById('ghost-guide-overlay') || document.querySelector('.ghost-overlay-frame');
     if (!overlay) return;
-    overlay.style.transform = 'none';
+    overlay.style.setProperty('--verification-overlay-scale', verificationZoom.toFixed(2));
   };
 
   window.updateSilhouetteOrientation = window.checkAndRotateSilhouette;
