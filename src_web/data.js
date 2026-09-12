@@ -455,7 +455,7 @@ export const sitesData = [
     ],
     quizzes: [
       {
-        question: "In what year was the Bandaranaike Memorial International Conference Hall (BMICH) presented to Sri Lanka?",
+        question: "In what year was the Bandaranaike Memorial International Conference Hall inaugurated?",
         options: ["1973", "1965", "1980", "1958"],
         correctIndex: 0
       },
@@ -467,6 +467,91 @@ export const sitesData = [
       {
         question: "What distinct geometric shape defines the main convention hall architecture of BMICH?",
         options: ["Octagonal", "Hexagonal", "Circular", "Square"],
+        correctIndex: 0
+      },
+      {
+        question: "BMICH was built as a memorial to which Sri Lankan Prime Minister?",
+        options: ["S. W. R. D. Bandaranaike", "D. S. Senanayake", "Dudley Senanayake", "Sir John Kotelawala"],
+        correctIndex: 0
+      },
+      {
+        question: "In which year was construction of BMICH initiated?",
+        options: ["1970", "1966", "1975", "1982"],
+        correctIndex: 0
+      },
+      {
+        question: "Who was the patron at the initiation of BMICH construction?",
+        options: ["Prime Minister Sirimavo Bandaranaike", "Prime Minister D. S. Senanayake", "President J. R. Jayewardene", "Prime Minister Dudley Senanayake"],
+        correctIndex: 0
+      },
+      {
+        question: "On which date was the completed BMICH entrusted to the Sri Lankan Government?",
+        options: ["17 May 1973", "24 November 1970", "4 February 1972", "17 May 1976"],
+        correctIndex: 0
+      },
+      {
+        question: "Approximately how many workers took part in constructing BMICH?",
+        options: ["2,000", "500", "5,000", "10,000"],
+        correctIndex: 0
+      },
+      {
+        question: "How much did the People's Republic of China donate toward BMICH construction?",
+        options: ["LKR 35 million", "LKR 5 million", "LKR 100 million", "LKR 250 million"],
+        correctIndex: 0
+      },
+      {
+        question: "What regional distinction did BMICH hold when it opened?",
+        options: ["Asia's first purpose-built conference centre", "Asia's tallest hotel", "South Asia's first airport terminal", "The region's first parliament building"],
+        correctIndex: 0
+      },
+      {
+        question: "Approximately how large are the landscaped BMICH grounds according to its official history?",
+        options: ["40 acres", "10 acres", "75 acres", "120 acres"],
+        correctIndex: 0
+      },
+      {
+        question: "Which major international gathering brought global recognition to BMICH in 1976?",
+        options: ["The Fifth Non-Aligned Conference", "The first SAARC Summit", "The Commonwealth Games", "The United Nations General Assembly"],
+        correctIndex: 0
+      },
+      {
+        question: "More than how many world leaders and dignitaries attended the 1976 Non-Aligned Conference at BMICH?",
+        options: ["85", "25", "50", "150"],
+        correctIndex: 0
+      },
+      {
+        question: "In which year did BMICH host a SAARC Conference of World Leaders?",
+        options: ["1991", "1973", "1985", "2005"],
+        correctIndex: 0
+      },
+      {
+        question: "Which numbered SAARC Conference was held at BMICH in 1998?",
+        options: ["The 10th", "The 5th", "The 12th", "The 15th"],
+        correctIndex: 0
+      },
+      {
+        question: "Which national milestone was celebrated with a major BMICH exhibition in 1998?",
+        options: ["Sri Lanka's 50th Independence anniversary", "Sri Lanka becoming a republic", "The centenary of Colombo", "The first parliamentary election"],
+        correctIndex: 0
+      },
+      {
+        question: "The Sirimavo Bandaranaike Memorial Exhibition Centre commemorates whom?",
+        options: ["Sirimavo Bandaranaike", "S. W. R. D. Bandaranaike", "Anagarika Dharmapala", "D. S. Senanayake"],
+        correctIndex: 0
+      },
+      {
+        question: "In which year does BMICH's official history say the Sirimavo Bandaranaike Memorial Exhibition Centre was built?",
+        options: ["2003", "1976", "1991", "2010"],
+        correctIndex: 0
+      },
+      {
+        question: "Approximately how much floor area does the Sirimavo Bandaranaike Exhibition Centre provide?",
+        options: ["33,000 square feet", "5,000 square feet", "75,000 square feet", "150,000 square feet"],
+        correctIndex: 0
+      },
+      {
+        question: "Which description best matches the range of facilities at the BMICH complex?",
+        options: ["More than 20 different event venues", "A single conference room only", "An outdoor stadium without halls", "A museum with no event spaces"],
         correctIndex: 0
       }
     ]

@@ -9463,7 +9463,7 @@ function renderQuiz() {
           type="button"
           onclick="window.confirmAndAdvanceQuiz()"
           style="width: 100%; background: #0C6C7A; color: #FFFFFF; border: none; border-radius: 12px; padding: 13px; font-size: 13.5px; font-weight: 800; cursor: pointer; box-shadow: 0 4px 12px rgba(12,108,122,0.25);">
-          ${qNum === 5 ? 'Complete Quiz' : 'Next Question'}
+          ${qNum === session.questions.length ? 'Complete Quiz' : 'Next Question'}
         </button>
 
       </div>
@@ -9514,7 +9514,7 @@ window.confirmAndAdvanceQuiz = function () {
   });
 
   setTimeout(() => {
-    if (session.currentIndex + 1 < 5) {
+    if (session.currentIndex + 1 < session.questions.length) {
       session.currentIndex++;
       const chassis = document.getElementById('screen-viewport');
       if (chassis) {
@@ -9533,13 +9533,14 @@ window.finalizeQuizSession = function () {
   if (!session) return;
   if (session.timerId) clearInterval(session.timerId);
 
-  const passed = (session.score === 5);
+  const questionCount = session.questions.length;
+  const passed = questionCount > 0 && session.score === questionCount;
   const siteId = session.siteId;
   const siteName = session.siteName || "Site";
   const siteImage = session.siteImage || "/assets/images/independence_hall.webp";
 
   const attemptResult = typeof window.recordQuizResult === 'function'
-    ? window.recordQuizResult(siteId, passed ? 100 : (session.score * 20))
+    ? window.recordQuizResult(siteId, questionCount > 0 ? Math.round((session.score / questionCount) * 100) : 0)
     : { attemptsUsed: 1, attemptsRemaining: 2, isLocked: false };
 
   if (passed) {
@@ -9588,13 +9589,13 @@ window.finalizeQuizSession = function () {
           </div>
 
           <h3 style="margin: 0 0 6px 0; font-size: 20px; font-weight: 900; color: #1E293B;">
-            Score: ${session.score} / 5 Correct
+            Score: ${session.score} / ${questionCount} Correct
           </h3>
           
           <p style="margin: 0 0 20px 0; font-size: 12.5px; color: #4A3E2C; text-align: center; line-height: 1.5; max-width: 300px;">
             ${passed
         ? `You achieved 100% accuracy. +50 XP has been credited to your explorer passport for ${siteName}.`
-        : `A score of 5 out of 5 is required to earn the Landmark Mastery Badge. ${attemptResult.attemptsRemaining} of 3 attempts remain before the 30-minute global quiz cooldown.`
+        : `A score of ${questionCount} out of ${questionCount} is required to earn the Landmark Mastery Badge. ${attemptResult.attemptsRemaining} of 3 attempts remain before the 30-minute global quiz cooldown.`
       }
           </p>
 
