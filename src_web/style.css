@@ -5055,9 +5055,13 @@ body.map-active .bottom-nav,
   max-height: 75% !important;
   object-fit: contain !important;
   opacity: 0.35 !important;
-  transform: scale(var(--verification-overlay-scale, 1)) !important;
+  transform: translate3d(0, 0, 0) scale(var(--verification-overlay-scale, 1)) !important;
   transform-origin: center center !important;
-  filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.9)) !important;
+  filter: none !important;
+  backface-visibility: hidden;
+  will-change: transform;
+  outline: 2px dashed rgba(245, 190, 72, 0.9);
+  outline-offset: -2px;
 }
 
 .ghost-overlay-frame {
@@ -5066,7 +5070,7 @@ body.map-active .bottom-nav,
   object-fit: contain;
   opacity: 0.40;
   pointer-events: none;
-  transition: transform 0.12s ease;
+  transition: none;
 }
 
 /* National Museum reference framing rules.
@@ -5087,7 +5091,7 @@ body.map-active .bottom-nav,
   max-width: none !important;
   max-height: none !important;
   object-fit: contain !important;
-  transform: scale(var(--verification-overlay-scale, 1)) !important;
+  transform: translate3d(0, 0, 0) scale(var(--verification-overlay-scale, 1)) !important;
 }
 
 .verification-reference-image.verification-fit-vertical,
@@ -5097,7 +5101,7 @@ body.map-active .bottom-nav,
   max-width: none !important;
   max-height: none !important;
   object-fit: contain !important;
-  transform: scale(var(--verification-overlay-scale, 1)) !important;
+  transform: translate3d(0, 0, 0) scale(var(--verification-overlay-scale, 1)) !important;
 }
 
 .ghost-overlay-container.verification-fit-horizontal,

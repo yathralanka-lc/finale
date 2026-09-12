@@ -430,15 +430,15 @@ export const sitesData = [
       },
       {
         number: 2,
-        title: "BMICH Angled Exterior",
-        description: "Match the angled exterior view and surrounding foreground. The reference stays in its original orientation and spans the top and bottom edges.",
+        title: "BMICH Central Entrance",
+        description: "Match the close central frontage, roofline, emblem, pillars and entrance steps. The reference stays in its original orientation and spans the left and right edges.",
         image: "/assets/images/bmich_option_2.jpg",
-        fitAxis: "vertical"
+        fitAxis: "horizontal"
       },
       {
         number: 3,
-        title: "BMICH Reflecting Pool Entrance",
-        description: "Match the central entrance, emblem and reflecting pool. The reference stays in its original orientation and spans the left and right edges.",
+        title: "BMICH Side Perspective",
+        description: "Match the angled side frontage, roofline, pillars and entrance canopy. The reference stays in its original orientation and spans the left and right edges.",
         image: "/assets/images/bmich_option_3.jpg",
         fitAxis: "horizontal"
       }

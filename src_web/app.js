@@ -12800,6 +12800,7 @@ window.analyzeLandmarkPhoto = async function (video, referenceImageSrc, overlayI
   } else {
     window.drawVerificationCover(capturedContext, video, video.videoWidth, video.videoHeight, sampleSize, sampleSize);
   }
+  const comparisonDataUrl = capturedSample.toDataURL('image/jpeg', 0.88);
 
   const referenceImage = await window.loadVerificationReferenceImage(referenceImageSrc);
   const referenceSample = document.createElement('canvas');
@@ -12837,6 +12838,7 @@ window.analyzeLandmarkPhoto = async function (video, referenceImageSrc, overlayI
     score,
     passed: score >= 75,
     capturedDataUrl,
+    comparisonDataUrl,
     metrics: {
       structure: Math.round(structure * 100),
       outline: Math.round(outline * 100),
@@ -12870,7 +12872,7 @@ window.openPhotoMatchCamera = function (siteId = 'independence_memorial_hall', o
   cameraModal.style.cssText = `
     position: fixed; top: 0; left: 0; right: 0; bottom: 0;
     background: #000; z-index: 9999; display: flex; flex-direction: column;
-    justify-content: space-between; overflow: hidden; box-sizing: border-box;
+    justify-content: space-between; overflow: hidden; box-sizing: border-box; touch-action: none;
   `;
 
   cameraModal.innerHTML = `
@@ -12902,7 +12904,7 @@ window.openPhotoMatchCamera = function (siteId = 'independence_memorial_hall', o
     <!-- Camera Bottom Action Area: Single Physical Circular Shutter Button ONLY -->
     <div style="position: absolute; bottom: 0; left: 0; right: 0; z-index: 10; padding: 20px 16px max(env(safe-area-inset-bottom), 30px) 16px; background: linear-gradient(0deg, rgba(0,0,0,0.85) 0%, transparent 100%); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;">
       <p style="color: #FFFFFF; font-size: 12px; margin: 0; text-shadow: 0 2px 4px rgba(0,0,0,0.8); font-weight: 600;">
-        Pinch or use −/+ to resize the guide, align the monument, then tap shutter
+        Resize and align the guide. Only the area inside it is compared.
       </p>
 
       <!-- Physical Circular Shutter Button -->
@@ -12926,12 +12928,17 @@ window.openPhotoMatchCamera = function (siteId = 'independence_memorial_hall', o
   let verificationZoom = 1;
   let pinchStartDistance = 0;
   let pinchStartZoom = 1;
+  let pendingZoomFrame = 0;
 
   const applyVerificationZoom = (nextZoom) => {
     verificationZoom = Math.max(0.5, Math.min(2.5, Number(nextZoom) || 1));
-    if (overlayImage) overlayImage.style.setProperty('--verification-overlay-scale', verificationZoom.toFixed(2));
     if (zoomRange) zoomRange.value = String(Math.round(verificationZoom * 100));
     if (zoomValue) zoomValue.textContent = `${Math.round(verificationZoom * 100)}%`;
+    if (pendingZoomFrame) cancelAnimationFrame(pendingZoomFrame);
+    pendingZoomFrame = requestAnimationFrame(() => {
+      if (overlayImage) overlayImage.style.setProperty('--verification-overlay-scale', verificationZoom.toFixed(3));
+      pendingZoomFrame = 0;
+    });
   };
   const touchDistance = (touches) => Math.hypot(
     touches[0].clientX - touches[1].clientX,
@@ -12994,7 +13001,10 @@ window.openPhotoMatchCamera = function (siteId = 'independence_memorial_hall', o
   window.checkAndRotateSilhouette = function () {
     const overlay = document.getElementById('ghost-overlay-img') || document.getElementById('ghost-guide-overlay') || document.querySelector('.ghost-overlay-frame');
     if (!overlay) return;
-    overlay.style.setProperty('--verification-overlay-scale', verificationZoom.toFixed(2));
+    const scaleValue = verificationZoom.toFixed(3);
+    if (overlay.style.getPropertyValue('--verification-overlay-scale') !== scaleValue) {
+      overlay.style.setProperty('--verification-overlay-scale', scaleValue);
+    }
   };
 
   window.updateSilhouetteOrientation = window.checkAndRotateSilhouette;
@@ -13197,7 +13207,7 @@ window.showPhotoComparisonResult = function (site, option, result, xpAwarded = 0
       </p>
       <div class="photo-result-comparison">
         <figure><img src="${option.image}" alt="Selected reference image"><figcaption>Original reference</figcaption></figure>
-        <figure><img src="${result.capturedDataUrl}" alt="Photo captured by visitor"><figcaption>Your captured photo</figcaption></figure>
+        <figure><img src="${result.comparisonDataUrl || result.capturedDataUrl}" alt="Camera area used for comparison"><figcaption>Camera area compared</figcaption></figure>
       </div>
       <div class="photo-result-metrics" aria-label="Image comparison details">
         <span><strong>${result.metrics.structure}%</strong> Structure</span>
