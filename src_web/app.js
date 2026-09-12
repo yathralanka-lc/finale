@@ -7090,6 +7090,9 @@ window.initLeafletMap = function () {
         const userLat = pos.coords.latitude;
         const userLng = pos.coords.longitude;
         const accuracy = pos.coords.accuracy;
+        userCoordinates = { latitude: userLat, longitude: userLng, accuracy };
+        window.userCoordinates = userCoordinates;
+        if (window.state) window.state.userCoordinates = userCoordinates;
 
         const userIcon = L.divIcon({
           className: 'user-live-pin',
@@ -7157,8 +7160,11 @@ async function initializeYathraMap() {
       const coordinates = await Geolocation.getCurrentPosition();
       userCoordinates = {
         latitude: coordinates.coords.latitude,
-        longitude: coordinates.coords.longitude
+        longitude: coordinates.coords.longitude,
+        accuracy: coordinates.coords.accuracy
       };
+      window.userCoordinates = userCoordinates;
+      if (window.state) window.state.userCoordinates = userCoordinates;
       locationPermissionDenied = false;
     }
   } catch (err) {
@@ -8560,14 +8566,44 @@ window.showMatchConfidenceModal = function (site, confidencePercent) {
   chassis.appendChild(modal);
 };
 
-window.switchSiteDetailTab = function (tab) {
+window.switchSiteDetailTab = async function (tab) {
   if (!window.state) window.state = {};
   if (tab === 'verification') {
     const site = window.state.activeSite;
-    const userLat = window.userCoordinates?.latitude ?? window.state?.userCoordinates?.latitude ?? 6.9271;
-    const userLng = window.userCoordinates?.longitude ?? window.state?.userCoordinates?.longitude ?? 79.8612;
-    const siteLat = site?.latitude ?? site?.lat ?? 6.9271;
-    const siteLng = site?.longitude ?? site?.lng ?? 79.8612;
+    let currentPosition = window.userCoordinates || window.state?.userCoordinates || userCoordinates;
+
+    if (navigator.geolocation) {
+      try {
+        const freshPosition = await new Promise((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, {
+            enableHighAccuracy: true,
+            timeout: 12000,
+            maximumAge: 0
+          });
+        });
+        currentPosition = {
+          latitude: freshPosition.coords.latitude,
+          longitude: freshPosition.coords.longitude,
+          accuracy: freshPosition.coords.accuracy
+        };
+        userCoordinates = currentPosition;
+        window.userCoordinates = currentPosition;
+        window.state.userCoordinates = currentPosition;
+      } catch (error) {
+        console.warn('Fresh verification GPS fix unavailable:', error);
+      }
+    }
+
+    const userLat = Number(currentPosition?.latitude);
+    const userLng = Number(currentPosition?.longitude);
+    const resolvedSite = window.resolveSiteCoordinates?.(site) || {};
+    const siteLat = Number(resolvedSite.lat ?? site?.latitude ?? site?.lat);
+    const siteLng = Number(resolvedSite.lng ?? site?.longitude ?? site?.lng);
+
+    if (![userLat, userLng, siteLat, siteLng].every(Number.isFinite)) {
+      window.showNotification?.('Waiting for a precise GPS location. Keep Location enabled and try Verification again.', 'info');
+      return;
+    }
     const distance = typeof calculateHaversineDistanceMeters === 'function'
       ? calculateHaversineDistanceMeters(userLat, userLng, siteLat, siteLng)
       : 0;
