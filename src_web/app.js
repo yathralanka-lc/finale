@@ -1,6 +1,14 @@
 // YathraLanka App Logic Engine
 document.title = "YathraLanka";
 import { initialUserState, rankingScale, leaderboardPlayers, sitesData, sideQuestsData, rewardsData } from './data.js';
+import { APP_RULES, createRankDefinitions, getRankProgress as calculateRankProgress } from './modules/product-rules.js';
+import { calculateDistanceMeters as calculateGeoDistanceMeters, calculateHaversineDistanceMeters, createLocationService, isValidLocationCoordinatePair } from './modules/location-utils.js';
+import { resolveSiteCoordinates } from './modules/landmark-coordinates.js';
+import { analyzeLandmarkPhoto } from './modules/camera-comparison.js';
+import { createQuizAttemptStore, createQuizSessionQuestions } from './modules/quiz-engine.js';
+import { getLandmarkVerificationOption } from './modules/verification-options.js';
+import { applyLandmarkPhaseAward, createEmptyLandmarkProgress } from './modules/progression-rules.js';
+import { scrubLegacyBrowserAuth } from './modules/legacy-auth-cleanup.js';
 import { auth, db } from './firebase-init.js';
 import {
   getAuth,
@@ -111,104 +119,14 @@ window.enterMap = function (params = {}) {
 // ============================================================================
 // PHASE 2: CENTRALIZED AUTHORITATIVE PRODUCT RULES
 // ============================================================================
-const APP_RULES = Object.freeze({
-  xp: Object.freeze({
-    starting: 0,
-    location: 100,
-    photo: 70,
-    quiz: 50,
-    landmarkTotal: 220
-  }),
-  quiz: Object.freeze({
-    questionsPerSession: 5,
-    secondsPerQuestion: 30,
-    maxAttempts: 3,
-    cooldownMs: 30 * 60 * 1000,
-    masteryPercent: 100
-  }),
-  verification: Object.freeze({
-    radiusMeters: 500,
-    maxAccuracyMeters: 200,
-    locationFreshMs: 60 * 1000,
-    defaultVisitMs: 15 * 60 * 1000,
-    bmichVisitMs: 3 * 60 * 1000,
-    outsideResumeWindowMs: 60 * 60 * 1000,
-    photoMatchPercent: 75
-  }),
-  navigation: Object.freeze([
-    Object.freeze({ id: 'home', label: 'Home' }),
-    Object.freeze({ id: 'activism', label: 'Activism' }),
-    Object.freeze({ id: 'rewards', label: 'Achievements' }),
-    Object.freeze({ id: 'profile', label: 'Profile' })
-  ])
-});
 window.APP_RULES = APP_RULES;
 
-const RANK_DEFINITIONS = rankingScale.map(item => ({
-  id: String(item.rank || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, ''),
-  name: item.rank,
-  minXP: item.threshold,
-  maxXP: item.range?.[1] ?? null
-}));
+const RANK_DEFINITIONS = createRankDefinitions(rankingScale);
 window.RANK_DEFINITIONS = RANK_DEFINITIONS;
 
 function getRankProgress(totalXP) {
-  let xp = Number(totalXP);
-  if (isNaN(xp) || xp < 0 || !isFinite(xp)) {
-    xp = 0;
-  }
-  xp = Math.floor(xp);
-
-  let currentRank = RANK_DEFINITIONS[0];
-  let nextRank = RANK_DEFINITIONS[1];
-
-  for (let i = 0; i < RANK_DEFINITIONS.length; i++) {
-    const rank = RANK_DEFINITIONS[i];
-    if (rank.maxXP === null) {
-      if (xp >= rank.minXP) {
-        currentRank = rank;
-        nextRank = null;
-      }
-    } else {
-      if (xp >= rank.minXP && xp <= rank.maxXP) {
-        currentRank = rank;
-        nextRank = RANK_DEFINITIONS[i + 1] || null;
-        break;
-      }
-    }
-  }
-
-  const isHighestRank = nextRank === null;
-  const currentRankStartXP = currentRank.minXP;
-  const xpIntoCurrentRank = xp - currentRankStartXP;
-
-  let nextRankXP = null;
-  let xpRequiredForNextRank = 0;
-  let progressPercent = 100;
-
-  if (!isHighestRank && nextRank) {
-    nextRankXP = nextRank.minXP;
-    xpRequiredForNextRank = nextRankXP - currentRankStartXP;
-    if (xpRequiredForNextRank > 0) {
-      progressPercent = Math.min(100, Math.max(0, Math.floor((xpIntoCurrentRank / xpRequiredForNextRank) * 100)));
-    } else {
-      progressPercent = 100;
-    }
-  }
-
-  const result = {
-    currentRank,
-    nextRank,
-    currentXP: xp,
-    currentRankStartXP,
-    nextRankXP,
-    xpIntoCurrentRank,
-    xpRequiredForNextRank,
-    progressPercent,
-    isHighestRank
-  };
-
-  console.log(`[RANK] xp=${xp} current=${currentRank.id} next=${nextRank ? nextRank.id : 'none'} progress=${progressPercent}`);
+  const result = calculateRankProgress(totalXP, RANK_DEFINITIONS);
+  console.log(`[RANK] xp=${result.currentXP} current=${result.currentRank.id} next=${result.nextRank ? result.nextRank.id : 'none'} progress=${result.progressPercent}`);
   return result;
 }
 window.getRankProgress = getRankProgress;
@@ -1173,7 +1091,9 @@ window.renderUniversalBackButton = function (destination = 'home', params = {}) 
     ? 'background: rgba(255, 255, 255, 0.18); border: 1px solid rgba(255, 255, 255, 0.28); color: #FFFFFF;'
     : 'background: rgba(255, 255, 255, 0.88); border: 1px solid rgba(0, 0, 0, 0.12); color: #1E293B;';
 
-  const onClickAction = isAuth
+  const onClickAction = destination === 'back'
+    ? "window.goBack()"
+    : isAuth
     ? "window.handleAuthBackClick()"
     : (typeof destination === 'string' ? `window.executeAppNavigation('${destination}')` : "window.executeAppNavigation('home')");
 
@@ -1303,44 +1223,17 @@ window.initAppRouter = async function () {
     return;
   }
 
-  // Deep Link Exception 2: Email Activation
+  // Legacy activation links previously trusted browser-stored passwords and tokens.
+  // Firebase now owns account verification, so old links must never create a local account.
   if (mode === 'activateAccount' && emailParam) {
-    const email = decodeURIComponent(emailParam).trim().toLowerCase();
-    const pendingDb = JSON.parse(localStorage.getItem('yathralanka_pending_users') || '{}');
-    const verifiedDb = JSON.parse(localStorage.getItem('yathralanka_users') || '{}');
-    const pendingUser = pendingDb[email] || verifiedDb[email] || {};
-
-    let resolvedName = urlUserName ? decodeURIComponent(urlUserName).trim() : (pendingUser.name || 'Explorer');
-
-    const isFirstTime = !verifiedDb[email];
-    const confirmedUser = {
-      name: resolvedName,
-      displayName: resolvedName,
-      email: email,
-      password: pendingUser.password || '',
-      xp: Number.isFinite(Number(verifiedDb[email]?.xp)) ? Number(verifiedDb[email].xp) : 0,
-      medals: 0,
-      sitesVisited: 0,
-      quizzesPassed: 0,
-      emailVerified: true,
-      isGuest: false,
-      dashboard_visits: isFirstTime ? 1 : ((verifiedDb[email]?.dashboard_visits || 1) + 1),
-      loginCount: isFirstTime ? 1 : ((verifiedDb[email]?.loginCount || 1) + 1),
-      isNewRegistrant: isFirstTime,
-      joinedAt: verifiedDb[email]?.joinedAt || new Date().toISOString()
-    };
-
-    verifiedDb[email] = confirmedUser;
-    localStorage.setItem('yathralanka_users', JSON.stringify(verifiedDb));
-
-    delete pendingDb[email];
-    localStorage.setItem('yathralanka_pending_users', JSON.stringify(pendingDb));
-
-    localStorage.setItem('yathralanka_current_user', JSON.stringify(confirmedUser));
-    localStorage.setItem('yathralanka_active_user', JSON.stringify(confirmedUser));
-
-    window.state.user = confirmedUser;
-    window.state.currentUser = confirmedUser;
+    window.state.currentScreen = 'auth';
+    window.state.authActiveTab = 'signin';
+    window.navigate('auth');
+    window.showNotification('For your security, please sign in to complete account verification.', 'info');
+    window.history.replaceState({}, document.title, window.location.pathname);
+    window.__freshBootHandled = true;
+    window.__startupSessionPolicyComplete = true;
+    return;
     window.state.isGuest = false;
     window.state.isLoggedIn = true;
     window.state.sessionAuthorized = true;
@@ -2483,76 +2376,9 @@ window.getShortSiteName = function (site) {
   return name.length > 14 ? name.substring(0, 12) + '...' : name;
 };
 
-// Comprehensive Coordinate Registry for all Yathra Lanka Heritage & Gem Sites
-const SITE_COORDINATES_MAP = {
-  // Heritage Trail
-  bmich: { lat: 6.9016667, lng: 79.8727778 },
-  colombo_museum: { lat: 6.91041, lng: 79.86097 },
-  national_museum: { lat: 6.91041, lng: 79.86097 },
-  independence_memorial_hall: { lat: 6.90413, lng: 79.86758 },
-  independence_hall: { lat: 6.90413, lng: 79.86758 },
-  sigiriya: { lat: 7.956944, lng: 80.759720 },
-  temple_of_the_tooth: { lat: 7.2936, lng: 80.6414 },
-  temple_of_tooth: { lat: 7.2936, lng: 80.6414 },
-  kandy_tooth: { lat: 7.2936, lng: 80.6414 },
-  ruwanweliseya: { lat: 8.34998, lng: 80.3964 },
-  mihintale: { lat: 8.3593, lng: 80.5103 },
-  galle_fort: { lat: 6.0279875, lng: 80.2175781 },
-  dambulla: { lat: 7.8567, lng: 80.6483 },
-  dambulla_cave: { lat: 7.8567, lng: 80.6483 },
-
-  // Hidden Gems
-  ritigala: { lat: 8.11833, lng: 80.66461 },
-  ritigala_monastery: { lat: 8.11833, lng: 80.66461 },
-  dowa_temple: { lat: 6.8564, lng: 81.0225 },
-  dowa_rock_temple: { lat: 6.8564, lng: 81.0225 },
-  yudaganawa: { lat: 6.77, lng: 81.23 },
-  pilikuttuwa: { lat: 7.06394, lng: 80.05031 }, // converted 07°03′50.2″N, 80°03′01.1″E
-  maligawila: { lat: 6.7272, lng: 81.3501 },
-  buduruwagala: { lat: 6.6847, lng: 81.0795 }
-};
-
-// Safe Coordinate Resolver
-window.resolveSiteCoordinates = function (site) {
-  if (!site) return { lat: 7.8731, lng: 80.7718 };
-
-  // 1. Direct Lat/Lng properties
-  if (typeof site.lat === 'number' && typeof site.lng === 'number') {
-    return { lat: site.lat, lng: site.lng };
-  }
-  if (typeof site.latitude === 'number' && typeof site.longitude === 'number') {
-    return { lat: site.latitude, lng: site.longitude };
-  }
-  if (Array.isArray(site.coordinates) && site.coordinates.length >= 2) {
-    return { lat: Number(site.coordinates[0]), lng: Number(site.coordinates[1]) };
-  }
-  if (site.location && typeof site.location.lat === 'number' && typeof site.location.lng === 'number') {
-    return { lat: site.location.lat, lng: site.location.lng };
-  }
-
-  // 2. Lookup by ID, slug, or normalized title in coordinate map
-  const keys = [
-    String(site.id || '').toLowerCase().trim(),
-    String(site.slug || '').toLowerCase().trim(),
-    String(site.name || '').toLowerCase().replace(/[^a-z0-9]/g, '_'),
-    String(site.name || '').toLowerCase().replace(/\s+/g, '_')
-  ];
-
-  for (const k of keys) {
-    if (SITE_COORDINATES_MAP[k]) {
-      return SITE_COORDINATES_MAP[k];
-    }
-    // Substring partial match
-    for (const [mapKey, coords] of Object.entries(SITE_COORDINATES_MAP)) {
-      if (k.includes(mapKey) || mapKey.includes(k)) {
-        return coords;
-      }
-    }
-  }
-
-  // Geographic center of Sri Lanka fallback
-  return { lat: 7.8731, lng: 80.7718 };
-};
+// Landmark coordinate repository. Direct site coordinates take precedence so the
+// explicitly labelled phone-test coordinate remains isolated from live builds.
+window.resolveSiteCoordinates = resolveSiteCoordinates;
 
 // --- STRUCTURED LANDMARK VERIFICATION & SEQUENTIAL XP ENGINE ---
 // Phase breakdown:
@@ -2648,48 +2474,20 @@ window.awardLandmarkXP = function (siteId, phase) {
 
   const sId = String(siteId).toLowerCase().trim();
   if (!window.state.siteProgress[sId]) {
-    window.state.siteProgress[sId] = {
-      gpsVerified: false,
-      gpsXP: 0,
-      photoVerified: false,
-      photoXP: 0,
-      quizPassed: false,
-      quizXP: 0,
-      totalXP: 0
-    };
+    window.state.siteProgress[sId] = createEmptyLandmarkProgress();
   }
 
-  const prog = window.state.siteProgress[sId];
-  let xpAwarded = 0;
-  let message = "";
-
-  if (phase === 'GPS' && !prog.gpsVerified) {
-    prog.gpsVerified = true;
-    prog.gpsXP = APP_RULES.xp.location;
-    xpAwarded = APP_RULES.xp.location;
-    message = `📍 GPS Geofence Arrival verified! +${APP_RULES.xp.location} XP awarded.`;
-  } else if (phase === 'PHOTO' && !prog.photoVerified) {
-    prog.photoVerified = true;
-    prog.photoXP = APP_RULES.xp.photo;
-    xpAwarded = APP_RULES.xp.photo;
-    message = `📸 Photo Verification submitted! +${APP_RULES.xp.photo} XP awarded.`;
-  } else if (phase === 'QUIZ' && !prog.quizPassed) {
-    prog.quizPassed = true;
-    prog.quizXP = APP_RULES.xp.quiz;
-    xpAwarded = APP_RULES.xp.quiz;
-    message = `🧠 Heritage Lore Quiz passed! +${APP_RULES.xp.quiz} XP awarded.`;
-  }
+  const award = applyLandmarkPhaseAward(window.state.siteProgress[sId], phase, APP_RULES.xp);
+  const prog = award.progress;
+  window.state.siteProgress[sId] = prog;
+  const xpAwarded = award.xpAwarded;
+  const message = award.message;
 
   if (xpAwarded > 0) {
-    const currentTotal = prog.totalXP || 0;
-    const newTotal = Math.min(APP_RULES.xp.landmarkTotal, currentTotal + xpAwarded);
-    const actualGained = newTotal - currentTotal;
-    prog.totalXP = newTotal;
-
-    if (actualGained > 0) {
-      window.state.xp = (window.state.xp || 0) + actualGained;
+    if (xpAwarded > 0) {
+      window.state.xp = (window.state.xp || 0) + xpAwarded;
       if (window.state.user) {
-        window.state.user.xp = (window.state.user.xp || 0) + actualGained;
+        window.state.user.xp = (window.state.user.xp || 0) + xpAwarded;
         window.state.user.sitesVisited = Object.keys(window.state.siteProgress).filter(k => window.state.siteProgress[k].gpsVerified || window.state.siteProgress[k].photoVerified).length;
       }
 
@@ -3009,16 +2807,6 @@ window.forceRenderDirectory = function () {
 localStorage.removeItem('yathra_event_ledger');
 
 // --- CORE GEOLOCATION & MULTI-FACTOR VERIFICATION ENGINE ---
-function calculateHaversineDistanceMeters(lat1, lon1, lat2, lon2) {
-  const R = 6371000; // Earth's radius in meters
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLon = (lon2 - lon1) * Math.PI / 180;
-  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-    Math.sin(dLon / 2) * Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return Math.round(R * c);
-}
 
 function evaluateAntiSpoofingGuard(userLat, userLng, currentTimestamp = Date.now()) {
   if (state.lastKnownLocation && state.lastKnownLocation.timestamp) {
@@ -3107,6 +2895,10 @@ function initApp() {
 
 // --- INITIALIZATION ---
 document.addEventListener('DOMContentLoaded', () => {
+  const cleanedLegacyAuthKeys = scrubLegacyBrowserAuth(localStorage);
+  if (cleanedLegacyAuthKeys.length) {
+    console.info('[AUTH-SAFETY] Removed unsafe legacy credentials from browser storage.');
+  }
   initApp();
   initAuthListener();
 
@@ -3840,8 +3632,34 @@ window.handleSignOut = function () {
 window.executeAppNavigation = function (targetScreen, params = {}) {
   try {
     if (!window.state) window.state = {};
+    if (!params || typeof params !== 'object') params = {};
     const screenBefore = window.state.currentScreen;
     const paramsBefore = window.state.currentParams || {};
+    const skipHistory = params.__skipHistory === true;
+    delete params.__skipHistory;
+    if (!Array.isArray(window.state.navStack)) window.state.navStack = [];
+    if (!skipHistory && screenBefore && screenBefore !== targetScreen && !['welcome', 'landing', 'splash'].includes(screenBefore)) {
+      window.state.navStack.push({ screen: screenBefore, params: paramsBefore });
+      window.state.navStack = window.state.navStack.slice(-20);
+    }
+
+    const guestProtectedMockRoutes = {
+      petition: 'sign a heritage petition',
+      donations: 'explore a contribution journey',
+      cleanup: 'view or register for a community activity',
+      'create-event': 'view past community activities',
+      'rewards-list': 'explore partner offers',
+      'coupon-redeem': 'redeem a partner offer',
+      leaderboard: 'view the community leaderboard',
+      rank: 'view rank progress',
+      'travel-poster': 'view the travel recap',
+      settings: 'change account settings',
+      'offline-sync': 'manage account synchronisation'
+    };
+    if (window.isGuestSession?.() && guestProtectedMockRoutes[targetScreen]) {
+      window.showGuestMockActionGate?.(guestProtectedMockRoutes[targetScreen]);
+      return false;
+    }
 
     // A verified on-site visit owns a single landmark for 15 minutes. The
     // visitor can use every screen and every photo option for that landmark,
@@ -4129,19 +3947,19 @@ window.executeAppNavigation = function (targetScreen, params = {}) {
         break;
 
       case 'petition':
-        htmlContent = typeof renderPetitionPage === 'function' ? renderPetitionPage() : '';
+        htmlContent = renderMockPetitionsScreen();
         break;
 
       case 'donations':
-        htmlContent = typeof renderDonationsPage === 'function' ? renderDonationsPage() : '';
+        htmlContent = renderMockContributionsScreen();
         break;
 
       case 'cleanup':
-        htmlContent = typeof renderCleanupPage === 'function' ? renderCleanupPage() : '';
+        htmlContent = renderMockEventsScreen(params);
         break;
 
       case 'create-event':
-        htmlContent = typeof renderCreateEventPage === 'function' ? renderCreateEventPage() : '';
+        htmlContent = renderMockEventsScreen({ ...params, tab: 'past' });
         break;
 
       case 'rewards':
@@ -4149,11 +3967,11 @@ window.executeAppNavigation = function (targetScreen, params = {}) {
         break;
 
       case 'rewards-list':
-        htmlContent = typeof renderRewardsList === 'function' ? renderRewardsList() : '';
+        htmlContent = renderMockOffersScreen();
         break;
 
       case 'coupon-redeem':
-        htmlContent = typeof renderCouponRedeem === 'function' ? renderCouponRedeem() : '';
+        htmlContent = renderMockOffersScreen();
         break;
 
       case 'rank':
@@ -4161,7 +3979,7 @@ window.executeAppNavigation = function (targetScreen, params = {}) {
         break;
 
       case 'leaderboard':
-        htmlContent = typeof renderLeaderboard === 'function' ? renderLeaderboard() : '';
+        htmlContent = renderMockLeaderboardScreen();
         break;
 
       case 'profile':
@@ -4852,7 +4670,7 @@ function goBack() {
 
   if (state.navStack.length > 0) {
     const prev = state.navStack.pop();
-    navigate(prev, false);
+    navigate(prev.screen || prev, { ...(prev.params || {}), __skipHistory: true });
   } else {
     navigate('dashboard');
   }
@@ -6356,29 +6174,16 @@ function handleSiteCardClick(siteId) {
 }
 
 function handleImpactAction(actionType, actionPayload = {}) {
-  const isGuest = window.isGuestSession();
-
-  switch (actionType) {
-    case 'donation':
-      navigate('donations');
-      break;
-
-    case 'sign-petition':
-      navigate('petition');
-      break;
-
-    case 'join-cleanup':
-      navigate('cleanup');
-      break;
-
-    case 'create-event':
-      navigate('create-event');
-      break;
-
-    default:
-      console.warn(`Unhandled impact action: ${actionType}`);
-  }
+  const labels = {
+    donation: 'Donations',
+    'sign-petition': 'Petitions',
+    'join-cleanup': 'Volunteer events',
+    'create-event': 'Community events'
+  };
+  window.showFeaturePreviewNotice?.(labels[actionType] || 'This feature');
 }
+
+window.goBack = goBack;
 
 function updatePasswordEntropyUI(passVal) {
   const entropy = calculatePasswordEntropy(passVal);
@@ -6716,109 +6521,23 @@ window.VERIFICATION_RADIUS_METERS = APP_RULES.verification.radiusMeters;
 window.VERIFICATION_MAX_ACCURACY_METERS = APP_RULES.verification.maxAccuracyMeters;
 window.VERIFICATION_LOCATION_FRESH_MS = APP_RULES.verification.locationFreshMs;
 
-function isValidLocationCoordinatePair(position) {
-  if (!position) return false;
-  const latitude = Number(position.latitude);
-  const longitude = Number(position.longitude);
-  return Number.isFinite(latitude) && Number.isFinite(longitude) &&
-    latitude >= -90 && latitude <= 90 && longitude >= -180 && longitude <= 180;
-}
+const locationService = createLocationService({
+  nativeGeolocation: Geolocation,
+  browserGeolocation: navigator.geolocation,
+  getMaxAccuracyMeters: () => window.VERIFICATION_MAX_ACCURACY_METERS,
+  savePosition: nextPosition => {
+    userCoordinates = nextPosition;
+    window.userCoordinates = nextPosition;
+    if (!window.state) window.state = {};
+    window.state.userCoordinates = nextPosition;
+  },
+  setPermissionDenied: denied => { locationPermissionDenied = denied; },
+  notify: (message, type) => window.showNotification?.(message, type)
+});
 
 window.refreshCurrentLocationForVerification = async function (siteId = window.state?.activeSite?.id, showFeedback = false) {
-  if (window.__verificationLocationRequest) return window.__verificationLocationRequest;
-
-  window.__verificationLocationRequest = (async () => {
-    let bestPosition = null;
-    const savePosition = (coords) => {
-      const nextPosition = {
-        latitude: Number(coords.latitude),
-        longitude: Number(coords.longitude),
-        accuracy: Number.isFinite(Number(coords.accuracy)) ? Number(coords.accuracy) : null,
-        capturedAt: Date.now()
-      };
-      if (!isValidLocationCoordinatePair(nextPosition)) {
-        throw new Error('The device returned an invalid location.');
-      }
-      if (!bestPosition || !Number.isFinite(bestPosition.accuracy) ||
-          (Number.isFinite(nextPosition.accuracy) && nextPosition.accuracy < bestPosition.accuracy)) {
-        bestPosition = nextPosition;
-      }
-      userCoordinates = nextPosition;
-      window.userCoordinates = nextPosition;
-      if (!window.state) window.state = {};
-      window.state.userCoordinates = nextPosition;
-      locationPermissionDenied = false;
-      return nextPosition;
-    };
-
-    if (showFeedback) {
-      window.showNotification?.('Getting your precise location. Please wait a moment.', 'info');
-    }
-
-    let lastError = null;
-    try {
-      let permission = await Geolocation.checkPermissions();
-      if (permission.location !== 'granted' && permission.coarseLocation !== 'granted') {
-        permission = await Geolocation.requestPermissions();
-      }
-      if (permission.location === 'granted' || permission.coarseLocation === 'granted') {
-        const position = await Geolocation.getCurrentPosition({
-          enableHighAccuracy: true,
-          timeout: 15000,
-          maximumAge: 0
-        });
-        savePosition(position.coords);
-      } else {
-        locationPermissionDenied = true;
-        throw new Error('Location permission was not granted.');
-      }
-    } catch (error) {
-      lastError = error;
-      console.warn('Native precise location unavailable:', error);
-    }
-
-    if ((!bestPosition || !Number.isFinite(bestPosition.accuracy) || bestPosition.accuracy > window.VERIFICATION_MAX_ACCURACY_METERS) && navigator.geolocation) {
-      try {
-        const browserPosition = await new Promise((resolve, reject) => {
-          navigator.geolocation.getCurrentPosition(resolve, reject, {
-            enableHighAccuracy: true,
-            timeout: 15000,
-            maximumAge: 0
-          });
-        });
-        savePosition(browserPosition.coords);
-      } catch (error) {
-        lastError = error;
-        console.warn('Browser precise location unavailable:', error);
-      }
-    }
-
-    if (!isValidLocationCoordinatePair(bestPosition || userCoordinates)) {
-      locationPermissionDenied = true;
-      window.showNotification?.('Your current location could not be read. Turn on Location and Precise Location for Yathra Lanka, then tap Try Again.', 'error');
-      throw lastError || new Error('Current location unavailable.');
-    }
-
-    if (bestPosition && Number.isFinite(bestPosition.accuracy) && bestPosition.accuracy > window.VERIFICATION_MAX_ACCURACY_METERS) {
-      locationPermissionDenied = false;
-      throw new Error(`Location accuracy is only about ${Math.round(bestPosition.accuracy)} metres. Move to an open area and try again.`);
-    }
-
-    if (showFeedback) {
-      const accuracyText = Number.isFinite(userCoordinates.accuracy)
-        ? ` Accuracy is about ${Math.round(userCoordinates.accuracy)} metres.`
-        : '';
-      window.showNotification?.(`Location updated.${accuracyText}`, 'success');
-    }
-
-    return userCoordinates;
-  })();
-
-  try {
-    return await window.__verificationLocationRequest;
-  } finally {
-    window.__verificationLocationRequest = null;
-  }
+  void siteId;
+  return locationService.refresh({ showFeedback });
 };
 
 // --- MAP INITIALIZATION & LEAFLET FALLBACK ENGINE ---
@@ -7364,7 +7083,7 @@ function renderCalibrateCompass() {
   ];
 
   return `
-    <div class="screen">
+    <div class="screen" style="height:100%;display:flex;flex-direction:column;overflow:hidden;padding-bottom:0;">
       <div style="padding: 16px; text-align: left; width: 100%; box-sizing: border-box;">
         <button id="compass-back-btn" style="color: #000000; background: none; border: none; font-size: 24px; cursor: pointer; padding: 0;">←</button>
       </div>
@@ -8198,31 +7917,14 @@ window.attachMapEvents = function () {
   }
 };
 
-window.getQuizLockStatus = function (siteId = window.state?.activeSite?.id) {
-  const cleanId = String(siteId || 'unknown').toLowerCase().trim();
-  const lockUntil = parseInt(localStorage.getItem(`yathra_quiz_locked_until_${cleanId}`) || '0', 10);
-  const now = Date.now();
-  if (lockUntil > now) {
-    const remainingMinutes = Math.ceil((lockUntil - now) / (60 * 1000));
-    return { isLocked: true, remainingMinutes };
-  }
-  return { isLocked: false, remainingMinutes: 0 };
-};
-
-window.recordQuizResult = function (siteId, scorePercent) {
-  const cleanId = String(siteId || 'unknown').toLowerCase().trim();
-  let attempts = parseInt(localStorage.getItem(`yathra_quiz_attempts_${cleanId}`) || '0', 10) + 1;
-  localStorage.setItem(`yathra_quiz_attempts_${cleanId}`, String(attempts));
-
-  // A perfect score or three attempts pauses only this landmark's quiz.
-  if (scorePercent === APP_RULES.quiz.masteryPercent || attempts >= APP_RULES.quiz.maxAttempts) {
-    const lockDurationMs = APP_RULES.quiz.cooldownMs;
-    localStorage.setItem(`yathra_quiz_locked_until_${cleanId}`, String(Date.now() + lockDurationMs));
-    localStorage.removeItem(`yathra_quiz_attempts_${cleanId}`);
-    return { attemptsUsed: attempts, attemptsRemaining: 0, isLocked: true };
-  }
-  return { attemptsUsed: attempts, attemptsRemaining: Math.max(0, APP_RULES.quiz.maxAttempts - attempts), isLocked: false };
-};
+const quizAttemptStore = createQuizAttemptStore({
+  storage: localStorage,
+  cooldownMs: APP_RULES.quiz.cooldownMs,
+  maxAttempts: APP_RULES.quiz.maxAttempts,
+  masteryPercent: APP_RULES.quiz.masteryPercent
+});
+window.getQuizLockStatus = (siteId = window.state?.activeSite?.id) => quizAttemptStore.lockStatus(siteId);
+window.recordQuizResult = (siteId, scorePercent) => quizAttemptStore.recordResult(siteId, scorePercent);
 
 window.handleQuizButtonClick = function (siteId) {
   const lock = window.getQuizLockStatus(siteId);
@@ -9356,7 +9058,7 @@ function renderLedger() {
 function renderGuidelines() {
   const guides = [
     { title: 'Clear Framing :', desc: 'Ensure the historical structure or landmark takes up at least 40% of your camera viewfinder' },
-    { title: 'Optimal Framing :', desc: 'Avoid capturing direct silhouettes under harsh midday sun; capturing distinct architectural lines helps our AI verify structural geometry.' },
+    { title: 'Optimal Framing :', desc: 'Avoid direct silhouettes under harsh midday sun. Clear architectural lines make the on-device comparison easier to review.' },
     { title: 'The Dwell-Time Rule :', desc: 'Your device must be stationary at the site for the momentary validation window to complete verification data synchronization.' },
     { title: 'No Obstructions :', desc: 'Avoid massive crowds or holding objects directly in front of the lens.' }
   ];
@@ -9464,17 +9166,8 @@ window.getSharedQuizQuestionBank = function () {
 window.initSiteQuizSession = function (siteId) {
   const pool = window.sitesData || [];
   const site = pool.find(s => s.id === siteId) || window.state?.activeSite;
-  const seen = new Set();
-  const siteBank = (Array.isArray(site?.quizzes) ? site.quizzes : []).filter(question => {
-    const text = String(question?.question || '').trim();
-    const options = Array.isArray(question?.options) ? question.options : [];
-    const correctIndex = Number(question?.correctIndex);
-    const key = text.toLowerCase();
-    if (!text || seen.has(key) || options.length !== 4 || !Number.isInteger(correctIndex) || correctIndex < 0 || correctIndex >= options.length) return false;
-    seen.add(key);
-    return true;
-  });
-  if (!site || siteBank.length < APP_RULES.quiz.questionsPerSession) {
+  const selectedFive = createQuizSessionQuestions(site?.quizzes, APP_RULES.quiz.questionsPerSession);
+  if (!site || selectedFive.length < APP_RULES.quiz.questionsPerSession) {
     if (typeof window.showNotification === 'function') {
       window.showNotification("Knowledge Quiz for this location will be available soon.", "info");
     } else {
@@ -9493,18 +9186,6 @@ window.initSiteQuizSession = function (siteId) {
     }
     return;
   }
-
-  // Sample five questions only from the selected landmark.
-  const shuffledBank = [...siteBank].sort(() => 0.5 - Math.random());
-  const selectedFive = shuffledBank.slice(0, APP_RULES.quiz.questionsPerSession).map(q => {
-    const indexedOptions = q.options.map((opt, i) => ({ text: opt, isCorrect: i === q.correctIndex }));
-    const shuffledOptions = indexedOptions.sort(() => 0.5 - Math.random());
-    return {
-      question: q.question,
-      options: shuffledOptions.map(o => o.text),
-      correctIndex: shuffledOptions.findIndex(o => o.isCorrect)
-    };
-  });
 
   window.state = window.state || {};
   window.state.activeQuizSession = {
@@ -10058,35 +9739,178 @@ window.showFeaturePreviewNotice = function (featureName = 'This feature') {
   overlay.querySelector('#feature-preview-close')?.addEventListener('click', () => overlay.remove());
 };
 
-function renderActivismDashboard() {
-  const isGuest = window.isGuestSession();
+function renderUnavailableFeatureScreen(featureName) {
+  return `
+    <div class="screen yl-standard-screen" style="padding-bottom: 88px; display: flex; flex-direction: column; min-height: 100%; box-sizing: border-box;">
+      <div class="header-bar yl-standard-header">
+        ${window.renderUniversalBackButton('home')}
+        <div class="header-title">${featureName}</div>
+      </div>
+      <main style="flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px 20px; box-sizing: border-box;">
+        <section style="width: 100%; max-width: 360px; background: #FFFFFF; border: 1px solid #D7E5E8; border-radius: 18px; padding: 24px 18px; text-align: center; box-shadow: 0 4px 14px rgba(0,0,0,0.05);">
+          <div style="width: 48px; height: 48px; margin: 0 auto 12px; border-radius: 50%; background: rgba(12,108,122,0.10); color: #0B5A68; display: flex; align-items: center; justify-content: center; font-size: 24px;" aria-hidden="true">i</div>
+          <h2 style="margin: 0 0 8px; font-size: 18px; color: #0B5A68;">Coming after verification</h2>
+          <p style="margin: 0; font-size: 13px; line-height: 1.55; color: #64748B;">${featureName} will appear here only after the relevant organizer, partner details, and operating process have been confirmed. No submission, payment, registration, coupon, or XP action is available now.</p>
+        </section>
+      </main>
+      ${renderBottomNav('home')}
+    </div>
+  `;
+}
+
+const MOCK_NOTICE = 'Demonstration only. This action is shown for the future YathraLanka experience. No XP, database record, payment, registration, or external submission is created.';
+
+window.beginMockAction = function (actionLabel, onComplete = null) {
+  if (window.isGuestSession?.()) {
+    window.showGuestMockActionGate(actionLabel);
+    return;
+  }
+  onComplete?.();
+  window.showMockActionResult(actionLabel);
+};
+
+window.showGuestMockActionGate = function (actionLabel) {
+  const existing = document.getElementById('mock-action-modal');
+  if (existing) existing.remove();
+  const modal = document.createElement('div');
+  modal.id = 'mock-action-modal';
+  modal.className = 'auth-modal-overlay';
+  modal.innerHTML = `
+    <div class="auth-modal-card" role="dialog" aria-modal="true" style="max-width:340px; text-align:center; padding:24px;">
+      <h3 style="margin:0 0 8px; color:#0B5A68; font-size:18px;">Sign in to ${actionLabel}</h3>
+      <p style="margin:0 0 18px; color:#475569; font-size:13px; line-height:1.5;">Guest Explorer mode lets you view this area, but you need an account to ${actionLabel.toLowerCase()}.</p>
+      <button type="button" class="btn-primary" id="mock-gate-signin" style="width:100%; margin-bottom:9px;">Sign in or create account</button>
+      <button type="button" class="btn-outline" id="mock-gate-close" style="width:100%;">Keep exploring</button>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.querySelector('#mock-gate-signin')?.addEventListener('click', () => { modal.remove(); window.openAuthScreen('signin'); });
+  modal.querySelector('#mock-gate-close')?.addEventListener('click', () => modal.remove());
+};
+
+window.showMockActionResult = function (actionLabel) {
+  const existing = document.getElementById('mock-action-modal');
+  if (existing) existing.remove();
+  const modal = document.createElement('div');
+  modal.id = 'mock-action-modal';
+  modal.className = 'auth-modal-overlay';
+  modal.innerHTML = `
+    <div class="auth-modal-card" role="dialog" aria-modal="true" style="max-width:340px; text-align:center; padding:18px 24px 24px; position:relative;">
+      <button type="button" id="mock-result-back" class="back-button" aria-label="Go back" style="position:absolute;left:14px;top:14px;">${window.renderNavigationArrowIcon('left')}</button>
+      <div style="width:50px;height:50px;border-radius:50%;background:#E6F7F0;color:#087F5B;display:flex;align-items:center;justify-content:center;margin:0 auto 12px;font-size:27px;">✓</div>
+      <h3 style="margin:0 0 8px; color:#0B5A68; font-size:18px;">${actionLabel} completed</h3>
+      <p style="margin:0 0 18px; color:#475569; font-size:13px; line-height:1.5;">This preview does not save activity, award XP, or create a payment, registration, or external submission.</p>
+      <button type="button" class="btn-primary" id="mock-result-close" style="width:100%;">Continue exploring</button>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.querySelector('#mock-result-back')?.addEventListener('click', () => modal.remove());
+  modal.querySelector('#mock-result-close')?.addEventListener('click', () => modal.remove());
+};
+
+window.openMockPetition = function (petitionId, mode = 'read') {
+  const petitions = {
+    fort: { title: 'Protect the living heritage of Galle Fort', text: 'Support a community-led request for responsible visitor guidance, litter reduction, and protection of the historic streets and ramparts.', detail: 'Galle Fort is a living historic place where residents, small businesses, visitors and public services share narrow streets and open spaces. This petition asks for clearer visitor guidance, more practical waste reduction points, and community-led care days that respect the character of the fort.\n\nSupporters are asking for simple, constructive measures: clear guidance at key access points, responsible photography and street-use advice, and better coordination for clean-up activity. The aim is to protect the fort’s everyday life while helping visitors understand why careful behaviour matters.\n\nYour support represents a commitment to heritage care that is considerate of residents, local livelihoods and the historic fabric of the fort.' },
+    museum: { title: 'Strengthen learning access at the National Museum', text: 'Support more youth-friendly heritage learning materials and responsible museum visits that respect collections and staff guidance.', detail: 'The National Museum can be a welcoming starting point for young people discovering Sri Lanka’s history. This petition calls for clearer learning prompts, age-friendly interpretation and practical visit guidance that supports both curiosity and collection care.\n\nIt proposes more accessible learning resources for school groups, improved orientation for first-time visitors and visible reminders about respectful conduct in gallery spaces. These measures can help visitors engage more deeply while protecting the objects and stories entrusted to the museum.\n\nBy supporting this petition, you are encouraging an inclusive learning environment where every visitor can connect with heritage responsibly.' },
+    wetlands: { title: 'Protect Colombo heritage landscapes', text: 'Support neighbourhood awareness and responsible public-space care around Colombo’s landmark and heritage areas.', detail: 'Colombo’s landmark areas rely on the everyday care of the streets, gardens and public spaces that connect them. This petition supports practical neighbourhood action to reduce litter, protect green edges and encourage responsible use of shared spaces.\n\nThe proposal asks for regular community awareness sessions, clear care guidance and opportunities for residents and visitors to join local stewardship activities. It recognises that heritage landscapes are not only buildings: they are the spaces that make historic places welcoming and connected.\n\nYour signature supports positive collaboration around cleaner, safer and more respectful heritage neighbourhoods.' }
+  };
+  const item = petitions[petitionId];
+  if (!item) return;
+  if (mode === 'sign') {
+    if (window.isGuestSession?.()) {
+      window.showGuestMockActionGate(`sign “${item.title}”`);
+    } else {
+      window.renderMockPetitionForm(item);
+    }
+    return;
+  }
+  const modal = document.createElement('div');
+  modal.id = 'mock-action-modal'; modal.className = 'auth-modal-overlay';
+  modal.innerHTML = `<div class="auth-modal-card" role="dialog" aria-modal="true" style="width:min(100%,430px);height:min(88vh,720px);padding:0;overflow:hidden;display:flex;flex-direction:column;"><div class="header-bar yl-standard-header" style="flex:none;"><button type="button" class="back-button" id="petition-read-close">${window.renderNavigationArrowIcon('left')}</button><div class="header-title">Heritage petition</div></div><div id="petition-reading-copy" style="overflow-y:scroll;padding:20px 22px 16px;direction:rtl;scrollbar-width:thin;scrollbar-color:#0B5A68 #E6F7F0;"><div style="direction:ltr;"><h3 style="margin:0 0 10px;color:#0B5A68;font-size:20px;line-height:1.25;">${item.title}</h3><p style="margin:0 0 16px;color:#64748B;font-size:13px;line-height:1.55;">${item.text}</p>${item.detail.split('\n\n').map(p => `<p style="margin:0 0 16px;color:#334155;font-size:14px;line-height:1.65;">${p}</p>`).join('')}<p style="margin:18px 0 4px;color:#0B5A68;font-size:12px;font-weight:700;">Scroll to the end to enable your signature.</p></div></div><div style="padding:12px 22px 20px;border-top:1px solid #E2E8F0;flex:none;"><button type="button" class="btn-primary" id="petition-read-sign" disabled style="width:100%;opacity:.5;">Sign this petition</button></div></div>`;
+  document.body.appendChild(modal);
+  const readCopy = modal.querySelector('#petition-reading-copy');
+  const signButton = modal.querySelector('#petition-read-sign');
+  readCopy?.addEventListener('scroll', () => { if (readCopy.scrollTop + readCopy.clientHeight >= readCopy.scrollHeight - 8) { signButton.disabled = false; signButton.style.opacity = '1'; } });
+  modal.querySelector('#petition-read-sign')?.addEventListener('click', () => { modal.remove(); window.openMockPetition(petitionId, 'sign'); });
+  modal.querySelector('#petition-read-close')?.addEventListener('click', () => modal.remove());
+};
+
+window.renderMockPetitionForm = function (petition) {
+  const email = auth?.currentUser?.email || window.state?.user?.email || '';
+  const modal = document.createElement('div');
+  modal.id = 'mock-action-modal'; modal.className = 'auth-modal-overlay';
+  modal.innerHTML = `<div class="auth-modal-card" role="dialog" aria-modal="true" style="max-width:355px;padding:18px 22px 22px;position:relative;"><button type="button" class="back-button" id="mock-petition-back" aria-label="Go back" style="position:absolute;left:14px;top:14px;">${window.renderNavigationArrowIcon('left')}</button><h3 style="margin:4px 34px 10px;color:#0B5A68;font-size:17px;text-align:center;">Sign petition</h3><p style="font-size:12px;color:#64748B;margin:0 0 12px;">${petition.title}</p><label style="font-size:12px;font-weight:700;display:block;margin-bottom:4px;">Name <span style="color:#C53030;">*</span></label><input id="mock-petition-name" class="form-input" placeholder="Your name"><label style="font-size:12px;font-weight:700;display:block;margin:10px 0 4px;">Mobile number <span style="color:#C53030;">*</span></label><input id="mock-petition-phone" class="form-input" inputmode="tel" placeholder="07X XXX XXXX"><label style="font-size:12px;font-weight:700;display:block;margin:10px 0 4px;">Email <span style="color:#C53030;">*</span></label><input class="form-input" value="${email}" readonly><p id="mock-petition-error" style="display:none;color:#C53030;font-size:11px;margin:8px 0 0;"></p><button type="button" class="btn-primary" id="mock-petition-submit" style="width:100%;margin-top:14px;">Sign petition</button></div>`;
+  document.body.appendChild(modal);
+  modal.querySelector('#mock-petition-back')?.addEventListener('click', () => modal.remove());
+  modal.querySelector('#mock-petition-submit')?.addEventListener('click', () => {
+    const name = modal.querySelector('#mock-petition-name')?.value.trim();
+    const phone = modal.querySelector('#mock-petition-phone')?.value.trim();
+    const error = modal.querySelector('#mock-petition-error');
+    if (!name || !phone || !email) { error.textContent = 'Please complete every required field.'; error.style.display = 'block'; return; }
+    modal.remove(); window.showMockActionResult('Petition signature');
+  });
+};
+
+function mockPageShell(title, body, active = 'activism') {
+  return `<div class="screen yl-standard-screen" style="height:100%;display:flex;flex-direction:column;overflow:hidden;padding-bottom:0;"><div class="header-bar yl-standard-header" style="flex:none;">${window.renderUniversalBackButton('back')}<div class="header-title">${title}</div></div><main style="flex:1;overflow-y:auto;padding:16px 16px 22px;">${body}</main><div style="flex:none;">${renderBottomNav(active)}</div></div>`;
+}
+
+function renderMockPetitionsScreen() {
   const cards = [
-    { key: 'petition', title: 'Sign Petitions', desc: 'Review heritage and conservation campaigns.', image: 'Element Pictures/Ritigala Forest Petition.jpg', gated: true },
-    { key: 'donations', title: 'Donations', desc: 'Review heritage restoration support information.', image: 'Element Pictures/Donations Stupa.jpg', gated: false },
-    { key: 'cleanup', title: 'Join Cleanups', desc: 'Review organized environmental and heritage-site cleanups.', image: 'Element Pictures/Site Cleanup.jpg', gated: true },
-    { key: 'create-event', title: 'Create Community Event', desc: 'Preview the community event submission process.', image: 'Element Pictures/Pottery Village.jpg', gated: true }
+    ['fort', 'Protect the living heritage of Galle Fort', 'Community care for historic streets, ramparts, and visitor behaviour.', '1,284', './mock-activism/events/event-1.png'],
+    ['museum', 'Strengthen learning access at the National Museum', 'A youth-focused call for responsible learning and visits.', '942', './mock-activism/events/event-4.png'],
+    ['wetlands', 'Protect Colombo heritage landscapes', 'Care for the shared public spaces surrounding our landmarks.', '761', './mock-activism/events/event-6.png']
+  ];
+  return mockPageShell('Heritage petitions', `<p style="margin:0 0 14px;color:#64748B;font-size:12px;line-height:1.45;">Community proposals for practical care of Sri Lanka’s historic places.</p>${cards.map(([id,title,desc,count,image]) => `<section style="background:#FFF;border:1px solid #D7E5E8;border-radius:16px;overflow:hidden;margin-bottom:14px;box-shadow:0 3px 10px rgba(0,0,0,.04);"><img src="${image}" alt="Community heritage care" onclick="window.openPhotoGallery(['${image}'],0,'Community heritage care')" style="width:100%;height:116px;object-fit:cover;cursor:pointer;"><div style="padding:15px;"><span style="font-size:10px;font-weight:800;color:#B7791F;letter-spacing:.4px;">COMMUNITY PETITION</span><h2 style="font-size:16px;color:#0B5A68;margin:5px 0 6px;line-height:1.3;">${title}</h2><p style="font-size:12px;color:#64748B;line-height:1.45;margin:0 0 9px;">${desc}</p><p style="font-size:11px;font-weight:700;margin:0 0 12px;color:#334155;">${count} community supporters</p><div style="display:flex;gap:8px;"><button class="btn-outline" style="flex:1;" onclick="window.openMockPetition('${id}','read')">Read petition</button><button class="btn-primary" style="flex:1;" onclick="window.openMockPetition('${id}','sign')">Sign petition</button></div></div></section>`).join('')}`);
+}
+
+function renderMockContributionsScreen() {
+  return mockPageShell('Support a project', `<section style="background:#FFF;border:1px solid #D7E5E8;border-radius:16px;overflow:hidden;margin-bottom:14px;"><img src="./mock-activism/events/event-3.png" alt="Heritage learning in the community" onclick="window.openPhotoGallery(['./mock-activism/events/event-3.png'],0,'Heritage learning in the community')" style="width:100%;height:142px;object-fit:cover;cursor:pointer;"><div style="padding:16px;"><span style="font-size:10px;font-weight:800;color:#B7791F;">HERITAGE LEARNING FUND</span><h2 style="font-size:17px;color:#0B5A68;margin:5px 0 7px;">Learning resources for young explorers</h2><p style="font-size:12px;color:#64748B;line-height:1.5;margin:0 0 13px;">Help make field guides, learning prompts and community heritage activities accessible to more young people.</p><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;"><button class="btn-outline" onclick="window.beginMockAction('Project contribution')">Rs. 500</button><button class="btn-outline" onclick="window.beginMockAction('Project contribution')">Rs. 1,000</button><button class="btn-outline" onclick="window.beginMockAction('Project contribution')">Rs. 2,500</button></div><button class="btn-primary" style="width:100%;margin-top:12px;" onclick="window.beginMockAction('Project contribution')">Continue contribution</button></div></section>`);
+}
+
+window.openPhotoGallery = function (images, startIndex = 0, label = 'Photo gallery') {
+  if (!Array.isArray(images) || !images.length) return;
+  let index = startIndex % images.length;
+  const old = document.getElementById('photo-gallery-overlay'); if (old) old.remove();
+  const overlay = document.createElement('div'); overlay.id = 'photo-gallery-overlay'; overlay.className = 'auth-modal-overlay';
+  const render = () => { overlay.innerHTML = `<div role="dialog" aria-modal="true" style="width:min(92vw,460px);position:relative;"><button class="back-button" id="gallery-close" style="position:absolute;top:10px;left:10px;z-index:2;">${window.renderNavigationArrowIcon('left')}</button><img src="${images[index]}" alt="${label}" style="width:100%;max-height:68vh;object-fit:contain;display:block;border-radius:18px;background:#0B5A68;"><button id="gallery-prev" style="position:absolute;left:8px;top:50%;transform:translateY(-50%);width:42px;height:42px;border:0;border-radius:50%;background:#FFFFFF;color:#0B5A68;font-size:25px;">‹</button><button id="gallery-next" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);width:42px;height:42px;border:0;border-radius:50%;background:#FFFFFF;color:#0B5A68;font-size:25px;">›</button><p style="margin:10px 0 0;text-align:center;color:#FFFFFF;font-size:12px;font-weight:700;">${index + 1} of ${images.length}</p></div>`; overlay.querySelector('#gallery-close').onclick=()=>overlay.remove(); overlay.querySelector('#gallery-prev').onclick=()=>{index=(index-1+images.length)%images.length;render();}; overlay.querySelector('#gallery-next').onclick=()=>{index=(index+1)%images.length;render();}; };
+  render(); document.body.appendChild(overlay);
+};
+
+function renderMockEventsScreen(params = {}) {
+  const tab = params.tab === 'past' ? 'past' : 'upcoming';
+  const eventCards = tab === 'past'
+    ? [{title:'Fort care walk', meta:'14 August 2026 · Galle', host:'Nadeesha Perera', people:'38 people attended', purpose:'A community walk and litter-care activity along the fort streets.', img:'./mock-activism/portraits/person-17.png', gallery:['./mock-activism/events/event-1.png','./mock-activism/events/event-2.png','./mock-activism/events/event-3.png']}, {title:'Museum learning circle', meta:'28 July 2026 · Colombo 07', host:'Kasun Silva', people:'26 people attended', purpose:'A discussion and sketching activity for young museum visitors.', img:'./mock-activism/portraits/person-18.png', gallery:['./mock-activism/events/event-4.png','./mock-activism/events/event-5.png','./mock-activism/events/event-6.png']}]
+    : [{title:'Colombo heritage care morning', meta:'20 September 2026 · 8.30 AM', host:'Nadeesha Perera', people:'Independence Memorial Hall precinct', purpose:'A morning care walk focused on shared public spaces and visitor guidance.', img:'./mock-activism/portraits/person-2.png'}, {title:'Galle Fort community trail', meta:'27 September 2026 · 4.00 PM', host:'Kasun Silva', people:'Galle Fort heritage zone', purpose:'A guided community trail on respectful visitor practices and local stories.', img:'./mock-activism/portraits/person-5.png'}];
+  return mockPageShell('Community action', `<div style="display:flex;gap:8px;margin-bottom:14px;"><button class="${tab==='upcoming'?'btn-primary':'btn-outline'}" style="flex:1;" onclick="window.navigate('cleanup',{tab:'upcoming'})">Upcoming</button><button class="${tab==='past'?'btn-primary':'btn-outline'}" style="flex:1;" onclick="window.navigate('cleanup',{tab:'past'})">Past activities</button></div>${eventCards.map(event => `<section style="background:#FFF;border:1px solid #D7E5E8;border-radius:16px;padding:14px;margin-bottom:12px;"><div style="display:flex;gap:11px;align-items:center;"><img src="${event.img}" alt="Event organiser" onclick="window.openPhotoGallery(['${event.img}'],0,'Event organiser')" style="width:52px;height:52px;border-radius:50%;object-fit:cover;cursor:pointer;"><div><h2 style="font-size:15px;color:#0B5A68;margin:0 0 3px;">${event.title}</h2><p style="font-size:11px;color:#64748B;margin:0;">${event.meta}</p><p style="font-size:11px;color:#64748B;margin:3px 0 0;">Organised by ${event.host}</p></div></div><p style="font-size:12px;margin:11px 0 5px;color:#334155;">${event.people}</p><p style="font-size:12px;margin:0 0 11px;color:#64748B;line-height:1.45;">${event.purpose}</p>${tab==='upcoming'?`<button class="btn-primary" style="width:100%;" onclick="window.beginMockAction('Volunteer event registration')">Register interest</button>`:`<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:5px;">${event.gallery.map((image,index)=>`<img src="${image}" alt="${event.title} photo ${index+1}" onclick="window.openPhotoGallery(${JSON.stringify(event.gallery).replace(/"/g,'&quot;')},${index},'${event.title}')" style="width:100%;height:64px;object-fit:cover;border-radius:7px;cursor:pointer;">`).join('')}</div>`}</section>`).join('')}`);
+}
+
+function renderMockOffersScreen() {
+  const offers = [['Traditional cooking experience','A guided cooking session with a local host','20% off','Element Pictures/Traditional Cooking Experience.jpg'],['Heritage trail guide','A small-group guided walk with local stories and site context','15% off','Element Pictures/Trail Guide.webp'],['Artisan crafts','A local craft discovery offer celebrating skilled makers','10% off','Element Pictures/Artisan Crafts.jpg.webp']];
+  return mockPageShell('Partner offers', `<p style="font-size:12px;color:#64748B;line-height:1.45;margin:0 0 14px;">Discover local experiences connected to culture, food, crafts and responsible travel.</p>${offers.map(([title,desc,discount,img])=>`<section style="background:#FFF;border:1px solid #D7E5E8;border-radius:16px;overflow:hidden;margin-bottom:12px;"><img src="${img}" alt="${title}" onclick="window.openPhotoGallery(['${img}'],0,'${title}')" style="width:100%;height:122px;object-fit:cover;cursor:pointer;"><div style="padding:15px;"><span style="font-size:10px;font-weight:800;color:#B7791F;">PARTNER OFFER · ${discount}</span><h2 style="font-size:16px;color:#0B5A68;margin:5px 0;">${title}</h2><p style="font-size:12px;color:#64748B;margin:0 0 12px;line-height:1.45;">${desc}</p><div style="display:flex;gap:8px;"><button class="btn-outline" style="flex:1;" onclick="window.beginMockAction('Offer details')">View offer</button><button class="btn-primary" style="flex:1;" onclick="window.beginMockAction('Coupon redemption')">Redeem</button></div></div></section>`).join('')}`,'rewards');
+}
+
+function renderMockLeaderboardScreen() {
+  const names = ['Nadeesha Perera','Kasun Silva','Ayesha Fernando','Ravindu Jayasinghe','Tharushi Perera','Nimalka Senanayake','Shenali Dias','Malith Jayawardena','Dinuki Silva','Harsha Wijesinghe','Mihiri Bandara','Sahan Fernando','Iresha Peiris','Kavindu Perera','Anuki Jayasuriya','Rashmika Silva','Chamodi Perera','Thilina Gunawardena','Hasini de Silva','Nuwan Perera'];
+  const players = names.map((name, index) => [name, (1240 - index * 42).toLocaleString(), index]);
+  return mockPageShell('Community leaderboard', `<section style="background:#0B5A68;border-radius:16px;padding:17px;margin-bottom:14px;color:#FFF;"><span style="font-size:10px;font-weight:800;letter-spacing:.8px;color:#F6D365;">COMMUNITY HIGHLIGHTS</span><h2 style="font-size:19px;margin:5px 0 4px;">Celebrating heritage explorers</h2><p style="font-size:12px;line-height:1.45;margin:0;color:#E6F7F0;">See the people whose exploration and care activities are inspiring the community.</p></section><section style="background:#FFF;border:1px solid #D7E5E8;border-radius:16px;overflow:hidden;">${players.map(([name,score,index])=>`<div style="display:flex;align-items:center;gap:11px;padding:12px 14px;border-bottom:${index===players.length-1?'0':'1px solid #EDF2F7'};"><strong style="width:20px;color:#B7791F;">${index+1}</strong><img src="./mock-activism/portraits/person-${index+1}.png" alt="${name}" onclick="window.openPhotoGallery(['./mock-activism/portraits/person-${index+1}.png'],0,'${name}')" style="width:42px;height:42px;border-radius:50%;display:block;flex:none;object-fit:cover;object-position:center;cursor:pointer;"><span style="flex:1;font-size:13px;font-weight:700;color:#0B5A68;">${name}</span><strong style="font-size:12px;color:#B7791F;">${score} XP</strong></div>`).join('')}</section>`,'rewards');
+}
+
+function renderActivismDashboard() {
+  const actionCards = [
+    { route: 'petition', title: 'Heritage petitions', copy: 'Read community proposals and add your support for heritage protection.', image: './mock-activism/events/event-1.png' },
+    { route: 'cleanup', title: 'Community action', copy: 'Find upcoming care activities and revisit community work already completed.', image: './mock-activism/events/event-2.png' },
+    { route: 'donations', title: 'Support a project', copy: 'Explore ways future projects and the YathraLanka team can be supported.', image: './mock-activism/events/event-3.png' },
+    { route: 'rewards-list', title: 'Partner offers', copy: 'Discover local experiences, benefits, and responsible travel rewards.', image: 'Element Pictures/Traditional Cooking Experience.jpg' },
+    { route: 'leaderboard', title: 'Community leaderboard', copy: 'Celebrate explorers whose journeys support heritage learning and care.', image: './mock-activism/events/event-5.png' }
   ];
   return `
     <div class="screen activism-screen activism-container impact-container" id="activism-view" style="padding-bottom: 80px;">
-      <div class="activism-top-header" style="padding: 20px 20px 6px 20px;">
+      <div class="activism-top-header" style="padding: 20px 20px 6px 76px;position:relative;">
+        ${window.renderUniversalBackButton('back')}
         <h2 style="font-size: 26px; font-weight: 900; display: flex; align-items: center; justify-content: space-between;">Make an Impact ${window.getGuestModeBadge()}</h2>
-        <p style="font-size: 12px; color: var(--color-gray); margin-top: 4px;">Support heritage through clear, verified activities.</p>
+        <p style="font-size: 12px; color: var(--color-gray); margin-top: 4px;">Discover ways to learn, participate, and care for Sri Lanka’s heritage.</p>
       </div>
-      <div style="display: flex; flex-direction: column; gap: 14px; padding: 10px 16px;">
-        ${cards.map(c => `
-          <button type="button" class="activism-card-link yl-impact-card" id="act-link-${c.key}" aria-label="${c.title}">
-            <img src="${c.image}" alt="" class="yl-impact-card-image">
-            <div class="yl-impact-card-copy">
-              <div style="display: flex; align-items: center; gap: 6px;">
-                <h3 style="font-size: 15px; font-weight: 800;">${c.title}</h3>
-              </div>
-              <p style="font-size: 11px; opacity: 0.8; margin-top: 2px;">${c.desc}</p>
-              <div class="yl-impact-card-meta">
-                ${isGuest && c.gated ? '<span class="yl-impact-guest-label">Sign In to Continue</span>' : '<span class="yl-impact-open-label">View Details</span>'}
-              </div>
-            </div>
-          </button>
-        `).join('')}
+      <div style="margin: 14px 16px 0; display:flex; flex-direction:column; gap:12px;">
+        ${actionCards.map(card => `<button type="button" onclick="window.navigate('${card.route}')" style="padding:0;overflow:hidden;background:#FFFFFF;border:1px solid #D7E5E8;border-radius:18px;text-align:left;box-shadow:0 4px 12px rgba(0,0,0,.05);cursor:pointer;display:flex;min-height:118px;"><img src="${card.image}" alt="" style="width:38%;object-fit:cover;object-position:center;"><span style="padding:16px 14px;display:flex;flex-direction:column;justify-content:center;"><strong style="font-size:17px;color:#0B5A68;margin-bottom:6px;">${card.title}</strong><small style="font-size:12px;line-height:1.45;color:#64748B;">${card.copy}</small></span></button>`).join('')}
       </div>
       ${renderBottomNav('activism')}
     </div>
@@ -10247,13 +10071,12 @@ function renderRewardsDashboard() {
   const displayedRank = getRankProgress(state.user?.xp || 0).currentRank.name;
   const rewardCards = [
     { id: 'rew-link-list', title: 'Achievement Medals', desc: 'View the achievement medals earned through verified activity.', icon: '<path d="M20 12v10H4V12M2 7h20v5H2zM12 22V7M12 7H7.5a2.5 2.5 0 1 1 2.4-3.2L12 7Zm0 0h4.5a2.5 2.5 0 1 0-2.4-3.2L12 7Z"/>' },
-    { id: 'rew-link-rank', title: 'Rank Progress', desc: `Track your progress as a ${displayedRank}.`, icon: '<path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0V4Z"/><path d="M7 6H4v2a4 4 0 0 0 4 4M17 6h3v2a4 4 0 0 1-4 4"/>' },
-    { id: 'rew-link-benefits', title: 'Experiences and Offers', desc: 'Preview available experience and partner offer pages.', icon: '<path d="M20 12v10H4V12M2 7h20v5H2zM12 22V7"/>' },
-    { id: 'rew-link-leaderboard', title: 'Leaderboard', desc: 'View the explorer leaderboard using public profile names only.', icon: '<path d="M4 20V10h4v10M10 20V4h4v16M16 20v-7h4v7"/>' }
+    { id: 'rew-link-rank', title: 'Rank Progress', desc: `Track your progress as a ${displayedRank}.`, icon: '<path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0V4Z"/><path d="M7 6H4v2a4 4 0 0 0 4 4M17 6h3v2a4 4 0 0 1-4 4"/>' }
   ];
   return `
     <div class="screen rewards-screen rewards-container" id="rewards-view" style="padding-bottom: 80px;">
-      <div class="rewards-top-header" style="padding: 20px 20px 6px 20px;">
+      <div class="rewards-top-header" style="padding: 20px 20px 6px 76px;position:relative;">
+        ${window.renderUniversalBackButton('back')}
         <h2 style="font-size: 26px; font-weight: 900; display: flex; align-items: center; justify-content: space-between;">Achievements ${window.getGuestModeBadge()}</h2>
         <p style="font-size: 12px; color: var(--color-gray); margin-top: 4px;">Your verified progress, medals, and standing.</p>
       </div>
@@ -10351,13 +10174,13 @@ function renderRankScreen() {
     : `${level.minXP.toLocaleString()}–${level.maxXP.toLocaleString()} XP`;
 
   return `
-    <div class="screen rank-screen yl-standard-screen" style="padding-bottom: 88px;">
-      <div class="header-bar yl-standard-header">
+    <div class="screen rank-screen yl-standard-screen" style="height:100%;display:flex;flex-direction:column;overflow:hidden;padding-bottom:0;">
+      <div class="header-bar yl-standard-header" style="flex:none;">
         <button class="back-button" id="rank-back">←</button>
         <div class="header-title">Rank Progress</div>
       </div>
-      <main class="rank-content">
-        <section class="rank-summary-card" aria-label="Current rank">
+      <main class="rank-content" style="flex:1;overflow:hidden;display:flex;flex-direction:column;padding:16px 16px 0;">
+        <section class="rank-summary-card" aria-label="Current rank" style="flex:none;margin-bottom:14px;">
           <div class="rank-trophy-icon" aria-hidden="true">🏆</div>
           <p class="rank-eyebrow">Current rank</p>
           <h1>${currentRank.name}</h1>
@@ -10371,7 +10194,7 @@ function renderRankScreen() {
           </div>
         </section>
 
-        <section class="rank-ladder" aria-label="All ranks">
+        <section class="rank-ladder" aria-label="All ranks" style="flex:1;overflow-y:auto;margin-bottom:16px;">
           <div class="rank-section-heading">
             <h2>Rank levels</h2>
             <p>The same XP levels shown on your dashboard.</p>
@@ -10392,7 +10215,7 @@ function renderRankScreen() {
   }).join('')}
         </section>
       </main>
-      ${renderBottomNav('rewards')}
+      <div style="flex:none;">${renderBottomNav('rewards')}</div>
     </div>
   `;
 }
@@ -10466,11 +10289,11 @@ window.handleCustomAvatarUpload = function (event) {
 window.openMedalsGalleryModal = function () {
   const unlocked = window.state?.unlockedMedals || [];
   const medals = [
-    { id: 'pathfinder_kingdom', title: 'Pathfinder of the Kingdom', tier: 'Bronze', xp: 150, icon: '📜', desc: 'Check in to 3 unique Heritage Trail landmarks within 14 days using live GPS verification.' },
-    { id: 'royal_chronicler', title: 'Royal Chronicler', tier: 'Silver', xp: 200, icon: '📸', desc: 'Upload 5 GPS-verified photos across registered historical sites within 30 days.' },
-    { id: 'guardian_polonnaruwa', title: 'Guardian of Polonnaruwa', tier: 'Gold', xp: 300, icon: '🏛️', desc: 'Complete all geofence check-ins and score 100% on the ancient irrigation & ruins quiz in 1 session.' },
-    { id: 'lankan_cartographer', title: 'Lankan Cartographer', tier: 'Diamond', xp: 500, icon: '🗺️', desc: 'Visit at least 1 verified landmark across 5 different districts within 60 days.' },
-    { id: 'sage_mahavamsa', title: 'Sage of the Mahavamsa', tier: 'Master Relic', icon: '👑', desc: 'Successfully pass 10 historical landmark quizzes on the first attempt.' }
+    { id: 'pathfinder_kingdom', title: 'First Landmark', tier: 'Bronze', xp: 50, icon: '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 21s7-5.2 7-12a7 7 0 1 0-14 0c0 6.8 7 12 7 12Z"/><circle cx="12" cy="9" r="2.4"/></svg>', desc: 'Complete your first verified heritage visit.' },
+    { id: 'royal_chronicler', title: 'Heritage Storyteller', tier: 'Silver', xp: 100, icon: '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h3l1.5-2h7L17 7h3v12H4Z"/><circle cx="12" cy="13" r="3.5"/></svg>', desc: 'Complete three verified landmark photo activities.' },
+    { id: 'guardian_polonnaruwa', title: 'Knowledge Keeper', tier: 'Gold', xp: 150, icon: '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="m4 10 8-5 8 5"/><path d="M6 10v7m4-7v7m4-7v7m4-7v7M3 20h18"/></svg>', desc: 'Pass three landmark knowledge quizzes.' },
+    { id: 'lankan_cartographer', title: 'Island Explorer', tier: 'Diamond', xp: 250, icon: '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="m3 6 6-3 6 3 6-3v15l-6 3-6-3-6 3Z"/><path d="M9 3v15m6-12v15"/></svg>', desc: 'Visit verified landmarks in five different districts.' },
+    { id: 'sage_mahavamsa', title: 'Heritage Guardian', tier: 'Master Relic', xp: 500, icon: '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 4v6a6 6 0 0 0 12 0V4h-3l-3 3-3-3Z"/><path d="M12 16v4m-4 0h8"/></svg>', desc: 'Complete five heritage journeys and contribute to community care.' }
   ];
 
   const oldModal = document.getElementById('medals-gallery-modal-overlay');
@@ -10478,72 +10301,60 @@ window.openMedalsGalleryModal = function () {
 
   const backdrop = document.createElement('div');
   backdrop.id = 'medals-gallery-modal-overlay';
-  backdrop.style.cssText = `
-    position: absolute; inset: 0; background: rgba(8, 24, 28, 0.85); backdrop-filter: blur(8px);
-    z-index: 10000; display: flex; flex-direction: column; justify-content: flex-end; overflow: hidden;
-  `;
+  backdrop.style.cssText = `position:absolute;inset:0;background:#FAF5E8;z-index:10000;display:flex;flex-direction:column;overflow:hidden;`;
 
   backdrop.onclick = function (e) {
     if (e.target === backdrop) backdrop.remove();
   };
 
   backdrop.innerHTML = `
-    <div style="background: #0A181C; border-top: 1.5px solid #D4AF37; border-top-left-radius: 24px; border-top-right-radius: 24px; padding: 20px 18px 28px 18px; box-sizing: border-box; max-height: 85vh; overflow-y: auto;">
-      <div style="width: 44px; height: 5px; background: rgba(212,175,55,0.4); border-radius: 99px; margin: 0 auto 16px auto;"></div>
-      
-      <div style="text-align: center; margin-bottom: 18px;">
-        <span style="font-size: 10px; font-weight: 800; color: #D4AF37; letter-spacing: 2px; text-transform: uppercase;">Achievement Medals</span>
-        <h3 class="royal-gold-text" style="margin: 4px 0 2px 0; font-size: 20px; font-weight: 900; font-family: 'Cinzel', serif;">Your Medal Collection</h3>
-        <p style="font-size: 11.5px; color: #94A3B8; margin: 0;">Medals earned through verified visits, photos, quizzes and community activity.</p>
+    <div style="height:100%;display:flex;flex-direction:column;overflow:hidden;">
+      <div class="header-bar yl-standard-header" style="flex:none;"><button class="back-button" id="medals-gallery-back">${window.renderNavigationArrowIcon('left')}</button><div class="header-title">Achievement Medals</div></div>
+      <div style="flex:1;overflow-y:auto;padding:18px 16px 22px;">
+      <div style="background:#0B5A68;border-radius:18px;padding:20px 16px;text-align:center;margin-bottom:16px;">
+        <span style="font-size:10px;font-weight:800;color:#F6D365;letter-spacing:1px;text-transform:uppercase;">Your collection</span>
+        <h3 style="margin:5px 0 5px;font-size:21px;font-weight:900;color:#FFFFFF;">Every journey leaves a mark</h3>
+        <p style="font-size:12px;color:#E6F7F0;margin:0;line-height:1.45;">Earn medals through verified visits, photography, learning and community action.</p>
       </div>
-
-      <div style="display: flex; flex-direction: column; gap: 12px; margin-bottom: 20px;">
+      <div style="display:flex;flex-direction:column;gap:12px;">
         ${medals.map(m => {
     const isUnlocked = unlocked.includes(m.id);
     const tierColors = {
-      'Bronze': '#CD7F32',
-      'Silver': '#C0C0C0',
-      'Gold': '#FFD700',
-      'Diamond': '#38BDF8',
-      'Master Relic': '#F43F5E'
+      'Bronze': '#B47818', 'Silver': '#64748B', 'Gold': '#B7791F', 'Diamond': '#2E7D8A', 'Master Relic': '#B47818'
     };
     const color = tierColors[m.tier] || '#D4AF37';
 
     return `
-            <div style="background: rgba(19,37,42,0.85); border: 1.5px solid ${isUnlocked ? color : 'rgba(255,255,255,0.1)'}; border-radius: 16px; padding: 14px; display: flex; align-items: center; gap: 14px; opacity: ${isUnlocked ? 1 : 0.65};">
-              <div style="width: 46px; height: 46px; border-radius: 50%; background: rgba(0,0,0,0.4); border: 2px solid ${color}; display: flex; align-items: center; justify-content: center; font-size: 22px; flex-shrink: 0;">
+            <div style="background:#FFFFFF;border:1px solid ${isUnlocked ? color : '#D7E5E8'};border-radius:16px;padding:14px;display:flex;align-items:center;gap:14px;opacity:${isUnlocked ? 1 : .72};">
+              <div style="width:46px;height:46px;border-radius:50%;background:#FDF6E2;border:2px solid ${color};display:flex;align-items:center;justify-content:center;color:${color};flex-shrink:0;">
                 ${m.icon}
               </div>
               <div style="flex: 1;">
                 <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 2px;">
-                  <h4 style="margin: 0; font-size: 13.5px; font-weight: 800; color: #FFFFFF;">${m.title}</h4>
-                  <span style="font-size: 9.5px; font-weight: 900; color: ${color}; background: rgba(0,0,0,0.4); padding: 2px 8px; border-radius: 8px; text-transform: uppercase; border: 1px solid ${color}40;">
+                  <h4 style="margin:0;font-size:13.5px;font-weight:800;color:#0B5A68;">${m.title}</h4>
+                  <span style="font-size:9.5px;font-weight:900;color:${color};background:#FDF6E2;padding:2px 8px;border-radius:8px;text-transform:uppercase;">
                     ${m.tier}
                   </span>
                 </div>
-                <p style="margin: 0 0 6px 0; font-size: 11px; color: #94A3B8; line-height: 1.4;">${m.desc}</p>
-                <div style="display: flex; align-items: center; justify-content: space-between;">
-                  <span style="font-size: 11px; font-weight: 800; color: #10B981;">+${m.xp} XP</span>
-                  <span style="font-size: 10.5px; font-weight: 800; color: ${isUnlocked ? '#34D399' : '#94A3B8'};">
-                    ${isUnlocked ? '✓ Unlocked & Claimed' : '🔒 Locked'}
+                <p style="margin:0 0 6px;font-size:11px;color:#64748B;line-height:1.4;">${m.desc}</p>
+                <div style="display:flex;align-items:center;justify-content:space-between;">
+                  <span style="font-size:11px;font-weight:800;color:#087F5B;">+${m.xp} XP</span>
+                  <span style="font-size:10.5px;font-weight:800;color:${isUnlocked ? '#087F5B' : '#64748B'};">
+                    ${isUnlocked ? '✓ Earned' : '🔒 Locked'}
                   </span>
                 </div>
               </div>
             </div>
           `;
   }).join('')}
-      </div>
-
-      <button 
-        onclick="document.getElementById('medals-gallery-modal-overlay').remove()" 
-        style="width: 100%; background: #D4AF37; color: #0A181C; border: none; padding: 12px; border-radius: 12px; font-weight: 800; font-size: 13.5px; cursor: pointer; box-shadow: 0 4px 14px rgba(212,175,55,0.3);">
-        Close Gallery
-      </button>
+      </div></div>
+      <div style="flex:none;">${renderBottomNav('rewards')}</div>
     </div>
   `;
 
   const chassis = document.querySelector('.screen-viewport') || document.querySelector('.iphone-chassis') || document.body;
   chassis.appendChild(backdrop);
+  backdrop.querySelector('#medals-gallery-back')?.addEventListener('click', () => backdrop.remove());
 };
 
 function renderProfile() {
@@ -10598,6 +10409,7 @@ function renderProfile() {
   return `
     <div class="screen profile-container royal-vault-screen yl-standard-screen" id="profile-view" style="position: relative; height: 100%; box-sizing: border-box; overflow-y: auto; padding-top: max(env(safe-area-inset-top), 28px); padding-bottom: 96px;">
       <input type="file" id="profile-avatar-input" accept="image/*" style="display: none;" onchange="window.handleCustomAvatarUpload(event)" />
+      ${window.renderUniversalBackButton('back')}
 
       <!-- Profile Header Title: strictly "My Profile" -->
       <div style="padding: 12px 20px 10px 20px; text-align: center; position: relative;">
@@ -10656,7 +10468,7 @@ function renderProfile() {
       <!-- 5 Action Hub Tile Matrix -->
       <div style="display: flex; flex-direction: column; gap: 10px; padding: 0 16px; margin-bottom: 24px;">
         <!-- 1. My Travel Map -->
-        <div class="vault-action-tile" onclick="window.navigate('travel-poster')">
+        <button type="button" id="profile-travel-map" class="vault-action-tile" onclick="window.navigate('travel-poster')" style="width:100%;border:0;text-align:left;">
           <div style="display: flex; align-items: center; gap: 14px;">
             <div style="width: 40px; height: 40px; border-radius: 12px; background: rgba(11, 90, 104, 0.08); border: 1px solid rgba(11, 90, 104, 0.18); display: flex; align-items: center; justify-content: center;">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#0B5A68" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -10674,7 +10486,7 @@ function renderProfile() {
             <span style="font-size: 10px; font-weight: 800; background: rgba(11, 90, 104, 0.1); color: #0B5A68; padding: 3px 8px; border-radius: 8px;">${sitesCount} Unlocked</span>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#EBB34D" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
           </div>
-        </div>
+        </button>
 
         <!-- 2. My Medals Gallery -->
         <div class="vault-action-tile" onclick="window.openMedalsGalleryModal()">
@@ -10772,7 +10584,7 @@ function renderTravelPoster() {
         <button class="back-button" id="poster-back">←</button>
         <div class="header-title">Travel Map</div>
       </div>
-      <div style="padding: 10px 20px; text-align: center;">
+      <div style="padding: 10px 20px; text-align: center;overflow-y:auto;flex:1;">
         <h2 style="font-size: 20px; font-weight: 900; margin-bottom: 2px;">Your Custom Travel Map Poster</h2>
         <p style="font-size: 11px; color: var(--color-gray);">A personalized testament to your YathraLanka impact</p>
       </div>
@@ -10801,49 +10613,35 @@ function renderTravelPoster() {
       </div>
       <div style="padding: 10px 20px; text-align: center;">
         <p style="font-size: 11px; color: var(--color-gray); font-weight: 700; margin-bottom: 12px; line-height: 1.4;">Celebrate your journey. Share your commitment to heritage protection.</p>
-        <div style="display: flex; gap: 16px; justify-content: center;">
-          <span style="font-size: 24px; cursor: pointer;">📸</span>
-          <span style="font-size: 24px; cursor: pointer;">👥</span>
-          <span style="font-size: 24px; cursor: pointer;">📸</span>
-          <span style="font-size: 24px; cursor: pointer;">✉️</span>
+        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;">
+          <button class="btn-outline" onclick="window.showFeaturePreviewNotice('Facebook sharing')">Facebook</button>
+          <button class="btn-outline" onclick="window.showFeaturePreviewNotice('Instagram sharing')">Instagram</button>
+          <button class="btn-outline" onclick="window.showFeaturePreviewNotice('WhatsApp sharing')">WhatsApp</button>
+          <button class="btn-primary" onclick="window.showFeaturePreviewNotice('Journey Map sharing')">Share journey</button>
         </div>
       </div>
+      <div style="flex:none;">${renderBottomNav('profile')}</div>
     </div>
   `;
 }
 
 function renderSettings() {
+  const settingRows = [
+    ['Permissions', 'Control location, camera and notification access.'],
+    ['Account', 'Review your sign-in method and profile information.'],
+    ['Language', 'English'],
+    ['Privacy Policy', 'Understand how YathraLanka handles your information.'],
+    ['Help & Support', 'Find guidance for visits, verification and account access.'],
+    ['About YathraLanka', 'Learn about the project, its purpose and its team.']
+  ];
   return `
-    <div class="screen">
+    <div class="screen yl-standard-screen" style="height:100%;display:flex;flex-direction:column;overflow:hidden;">
       <div class="header-bar">
         <button class="back-button" id="settings-back">←</button>
         <div class="header-title">Settings</div>
       </div>
-      <div class="location-list-container" style="gap: 12px; padding-top: 10px;">
-        <div class="selection-card" style="padding: 14px; justify-content: space-between;" id="sett-perm">
-          <span style="font-size: 13px; font-weight: 800;">Permissions</span>
-          <span>❯</span>
-        </div>
-        <div class="selection-card" style="padding: 14px; justify-content: space-between; cursor: default;">
-          <span style="font-size: 13px; font-weight: 800;">Account</span>
-          <span>❯</span>
-        </div>
-        <div class="selection-card" style="padding: 14px; justify-content: space-between; cursor: default;">
-          <span style="font-size: 13px; font-weight: 800;">Language <span style="font-size: 11px; color: var(--color-gray); font-weight: 600; margin-left: 6px;">English</span></span>
-          <span>❯</span>
-        </div>
-        <div class="selection-card" style="padding: 14px; justify-content: space-between; cursor: default;">
-          <span style="font-size: 13px; font-weight: 800;">Privacy Policy</span>
-          <span>❯</span>
-        </div>
-        <div class="selection-card" style="padding: 14px; justify-content: space-between; cursor: default;">
-          <span style="font-size: 13px; font-weight: 800;">Help & Support</span>
-          <span>❯</span>
-        </div>
-        <div class="selection-card" style="padding: 14px; justify-content: space-between; cursor: default;">
-          <span style="font-size: 13px; font-weight: 800;">About YathraLanka</span>
-          <span>❯</span>
-        </div>
+      <div class="location-list-container" style="gap:12px;padding-top:10px;flex:1;overflow-y:auto;">
+        ${settingRows.map(([title, subtitle]) => `<button type="button" class="selection-card" style="padding:14px;justify-content:space-between;text-align:left;cursor:pointer;width:100%;" onclick="window.showSettingsDetail('${title}')"><span><span style="font-size:13px;font-weight:800;display:block;">${title}</span><span style="font-size:11px;color:var(--color-gray);font-weight:600;display:block;margin-top:3px;">${subtitle}</span></span><span>❯</span></button>`).join('')}
         <div style="text-align: center; margin-top: 24px;">
           <span id="sett-logout" style="color: var(--color-red-reject); font-size: 14px; font-weight: 800; cursor: pointer;">Log Out</span>
         </div>
@@ -11566,17 +11364,7 @@ function setupIntervalPresencePoller() {
   }, POLLING_INTERVAL_MS);
 }
 
-function calculateDistanceMeters(lat1, lon1, lat2, lon2) {
-  const R = 6371e3;
-  const phi1 = lat1 * Math.PI / 180;
-  const phi2 = lat2 * Math.PI / 180;
-  const deltaPhi = (lat2 - lat1) * Math.PI / 180;
-  const deltaLambda = (lon2 - lon1) * Math.PI / 180;
-  const a = Math.sin(deltaPhi / 2) * Math.sin(deltaPhi / 2) +
-    Math.cos(phi1) * Math.cos(phi2) *
-    Math.sin(deltaLambda / 2) * Math.sin(deltaLambda / 2);
-  return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
-}
+const calculateDistanceMeters = calculateGeoDistanceMeters;
 
 async function processSyncQueue() {
   if (!navigator.onLine) return;
@@ -12001,6 +11789,21 @@ function captureLivePresencePhoto() {
   }
 }
 
+window.showSettingsDetail = function (title) {
+  const details = {
+    Permissions: 'Location helps confirm that a landmark visit takes place in the correct area. Camera access is used only when you choose to capture a checkpoint image. Notifications can keep you informed about active visit sessions and progress. You may change any of these permissions in your device settings whenever you wish.',
+    Account: 'Your account brings together verified visits, quiz progress, photos and profile choices. You can sign in using the method you selected when registering. Sensitive sign-in information is handled by the authentication provider and is not displayed inside the app.',
+    Language: 'English is currently selected for the YathraLanka experience. Sinhala and Tamil language options are planned for the public release so that more explorers can use the app comfortably.',
+    'Privacy Policy': '<strong>Privacy Policy</strong><br><br><strong>Information we use.</strong> YathraLanka uses profile information, plus optional location and camera information only when you choose to carry out a landmark verification.<br><br><strong>Location and camera.</strong> Location is requested only during a verification you start. Camera access is used only when you choose to take a checkpoint image. The app does not use either permission to follow you outside those chosen moments.<br><br><strong>How information is used.</strong> It supports your heritage journey, including visit verification, quiz progress and account access. It is not sold for advertising purposes.<br><br><strong>Your choices.</strong> You may withdraw camera, location or notification permissions in your device settings and may sign out at any time.<br><br><strong>Contact.</strong> Before public release, this section will include a YathraLanka contact channel for privacy questions or deletion requests.',
+    'Help & Support': 'If you need help with a visit, a checkpoint photo, a quiz or signing in, return to that screen and review the guidance shown there. Before public release, this page will also include direct contact details and frequently asked questions.',
+    'About YathraLanka': 'YathraLanka is a heritage exploration project created by students from Ladies’ College, Colombo 07. It brings together guided discovery, responsible visits, learning and community participation to help people connect with Sri Lanka’s cultural places.'
+  };
+  const modal = document.createElement('div'); modal.className = 'auth-modal-overlay'; modal.id = 'settings-detail-modal';
+  modal.innerHTML = `<div class="auth-modal-card" style="max-width:360px;max-height:80vh;overflow-y:auto;padding:18px 22px 22px;position:relative;"><button type="button" class="back-button" id="settings-detail-back" style="position:sticky;left:0;top:0;float:left;z-index:2;">${window.renderNavigationArrowIcon('left')}</button><h3 style="margin:5px 34px 14px;color:#0B5A68;text-align:center;font-size:18px;">${title}</h3><p style="margin:0;clear:both;color:#475569;font-size:13px;line-height:1.6;">${details[title] || ''}</p></div>`;
+  document.body.appendChild(modal);
+  modal.querySelector('#settings-detail-back')?.addEventListener('click', () => modal.remove());
+};
+
 function showVerificationFailureModal(scorePercent, checkpoint) {
   const existing = document.getElementById('verification-failure-modal-overlay');
   if (existing) existing.remove();
@@ -12118,7 +11921,7 @@ function showCheckpointBriefingModal(checkpoint) {
           <button class="btn-primary" id="btn-start-checkpoint-camera" style="flex: 1; height: 40px; font-size: 12px;" ${isTooFar ? 'disabled style="opacity:0.5;"' : ''}>
             Start Camera Verification
           </button>
-        </div>
+        </button>
       </div>
     </div>
   `;
@@ -12674,37 +12477,7 @@ if (document.readyState === 'loading') {
 // LANDMARK PHOTO VERIFICATION OPTIONS
 // ============================================================================
 
-window.getLandmarkVerificationOption = function (site, optionNum) {
-  const number = Number(optionNum) || 1;
-  const configured = Array.isArray(site?.verificationOptions)
-    ? site.verificationOptions.find(option => Number(option.number) === number)
-    : null;
-
-  if (configured) {
-    return {
-      number,
-      title: configured.title || `Image Option ${number}`,
-      description: configured.description || 'Align the live camera view with the reference image.',
-      image: configured.image || site.image,
-      fitAxis: configured.fitAxis === 'vertical' ? 'vertical' : 'horizontal'
-    };
-  }
-
-  const defaultDescriptions = {
-    1: 'Frontal landmark view aligned with the principal entrance and surrounding architectural boundaries.',
-    2: 'Secondary perspective capturing the landmark structure and its distinguishing architectural details.',
-    3: 'Alternative checkpoint angle aligned with the visible landmark boundaries.'
-  };
-  return {
-    number,
-    title: `Image Option ${number}`,
-    description: defaultDescriptions[number] || 'Align the live camera view with the reference image.',
-    image: number === 1
-      ? '/assets/images/independence_option_1.jpg'
-      : (site?.image || '/Element%20Pictures/Independence%20Memorial%20Hall.jpg'),
-    fitAxis: 'horizontal'
-  };
-};
+window.getLandmarkVerificationOption = getLandmarkVerificationOption;
 
 window.openTargetFramingView = async function (siteId = 'independence_memorial_hall', optionNum = 1) {
   if (typeof window.updateGlobalFooterVisibility === 'function') {
@@ -13098,7 +12871,7 @@ window.openPhotoMatchCamera = async function (siteId = 'independence_memorial_ha
     <!-- Camera Bottom Action Area: Single Physical Circular Shutter Button ONLY -->
     <div style="position: absolute; bottom: 0; left: 0; right: 0; z-index: 10; padding: 20px 16px max(env(safe-area-inset-bottom), 30px) 16px; background: linear-gradient(0deg, rgba(0,0,0,0.85) 0%, transparent 100%); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;">
       <p style="color: #FFFFFF; font-size: 12px; margin: 0; text-shadow: 0 2px 4px rgba(0,0,0,0.8); font-weight: 600;">
-        Resize and align the guide, then record your guided camera step.
+        Resize and align the guide, then take a verification photo.
       </p>
 
       <!-- Physical Circular Shutter Button -->
@@ -13296,58 +13069,91 @@ window.snapShutterAndVerify = async function (siteId = 'independence_memorial_ha
     shutter.disabled = true;
     shutter.classList.add('is-analyzing');
   }
-  if (instruction) instruction.textContent = 'Recording your guided camera step…';
+  if (instruction) instruction.textContent = 'Processing your verification photo…';
+
+  const option = window.getLandmarkVerificationOption(site, optionNum);
+  const referenceImageSrc = option.image || site.image || '/assets/images/independence_option_1.jpg';
+  const overlayImage = document.getElementById('ghost-overlay-img');
+  const processingOverlay = document.createElement('div');
+  processingOverlay.id = 'photo-analysis-processing';
+  processingOverlay.className = 'photo-analysis-processing';
+  processingOverlay.innerHTML = `
+    <div class="photo-analysis-processing-card" role="status" aria-live="assertive">
+      <div class="photo-analysis-spinner" aria-hidden="true"></div>
+      <h2>Checking your photo</h2>
+      <p>Comparing the camera area with the reference image. Please keep this screen open.</p>
+    </div>
+  `;
+  document.body.appendChild(processingOverlay);
+
+  let result;
+  try {
+    // Capture and compare only the visible guide area. Anything outside the silhouette is excluded.
+    result = await analyzeLandmarkPhoto(video, referenceImageSrc, overlayImage, APP_RULES.verification.photoMatchPercent);
+  } catch (error) {
+    console.error('Photo verification analysis failed:', error);
+    processingOverlay.remove();
+    if (shutter) {
+      shutter.disabled = false;
+      shutter.classList.remove('is-analyzing');
+    }
+    if (instruction) instruction.textContent = 'We could not process that photo. Please try again.';
+    if (typeof showNotification === 'function') {
+      showNotification('We could not process that photo. Please try again.', 'error');
+    }
+    return;
+  }
 
   window._photoMatchCameraCleanup?.();
+  if (video.srcObject) video.srcObject.getTracks().forEach(track => track.stop());
+  document.getElementById('photo-match-camera-screen')?.remove();
+  document.getElementById('target-framing-screen')?.remove();
+  processingOverlay.remove();
 
-  // Stop camera stream
-  if (video.srcObject) {
-    video.srcObject.getTracks().forEach(track => track.stop());
-  }
-
-  const cameraModal = document.getElementById('photo-match-camera-screen');
-  if (cameraModal) cameraModal.remove();
-
-  const framingScreen = document.getElementById('target-framing-screen');
-  if (framingScreen) framingScreen.remove();
-
-  if (!window.state) window.state = {};
-  const currentUid = auth?.currentUser?.uid || window.state?.user?.uid;
-  const siteProgressKey = typeof window.getSiteProgressKey === 'function'
-    ? window.getSiteProgressKey(currentUid)
-    : 'yathra_site_progress';
-  if (!window.state.siteProgress) {
-    try {
-      window.state.siteProgress = JSON.parse(localStorage.getItem(siteProgressKey) || '{}');
-    } catch (error) {
-      window.state.siteProgress = {};
-    }
-  }
-  if (!window.state.siteProgress[cleanId]) window.state.siteProgress[cleanId] = {};
-  const progress = window.state.siteProgress[cleanId];
-  if (!progress.photoOptionResults) progress.photoOptionResults = {};
-  progress.photoOptionResults[Number(optionNum)] = {
-    completed: true,
-    attemptedAt: Date.now()
-  };
-  const alreadyPhotoVerified = Boolean(progress.photoVerified || localStorage.getItem('site_photo_verified_' + cleanId) === 'true');
   let xpAwarded = 0;
-
-  if (!alreadyPhotoVerified && typeof window.awardLandmarkXP === 'function') {
-    window.awardLandmarkXP(cleanId, 'PHOTO');
-    xpAwarded = APP_RULES.xp.photo;
-  }
-  progress.photoVerified = true;
-  localStorage.setItem('site_photo_verified_' + cleanId, 'true');
-
+  // The result screen is mandatory after every successful capture. Persistence or XP
+  // failures must never send the user back to the verification tab without feedback.
   try {
+    if (!window.state) window.state = {};
+    const currentUid = auth?.currentUser?.uid || window.state?.user?.uid;
+    const siteProgressKey = typeof window.getSiteProgressKey === 'function'
+      ? window.getSiteProgressKey(currentUid)
+      : 'yathra_site_progress';
+    if (!window.state.siteProgress) {
+      try {
+        window.state.siteProgress = JSON.parse(localStorage.getItem(siteProgressKey) || '{}');
+      } catch (error) {
+        window.state.siteProgress = {};
+      }
+    }
+    if (!window.state.siteProgress[cleanId]) window.state.siteProgress[cleanId] = {};
+    const progress = window.state.siteProgress[cleanId];
+    if (!progress.photoOptionResults) progress.photoOptionResults = {};
+    progress.photoOptionResults[Number(optionNum)] = {
+      completed: result.passed,
+      score: result.score,
+      metrics: result.metrics,
+      attemptedAt: Date.now()
+    };
+    const alreadyPhotoVerified = Boolean(progress.photoVerified || localStorage.getItem('site_photo_verified_' + cleanId) === 'true');
+
+    if (result.passed && !alreadyPhotoVerified && typeof window.awardLandmarkXP === 'function') {
+      window.awardLandmarkXP(cleanId, 'PHOTO');
+      xpAwarded = APP_RULES.xp.photo;
+    }
+    if (result.passed) {
+      progress.photoVerified = true;
+      localStorage.setItem('site_photo_verified_' + cleanId, 'true');
+    }
     localStorage.setItem(siteProgressKey, JSON.stringify(window.state.siteProgress));
-  } catch (e) { }
+    if (typeof window.recalculateTotalXP === 'function') window.recalculateTotalXP();
+    if (typeof saveUserProfile === 'function') saveUserProfile();
+  } catch (error) {
+    console.error('Photo-verification result persistence failed:', error);
+    xpAwarded = 0;
+  }
 
-  if (typeof window.recalculateTotalXP === 'function') window.recalculateTotalXP();
-  if (typeof saveUserProfile === 'function') saveUserProfile();
-
-  window.showPhotoGuideCompletionResult(site, window.getLandmarkVerificationOption(site, optionNum), xpAwarded);
+  window.showPhotoVerificationResult(site, option, result, xpAwarded);
 };
 
 window.returnToLandmarkVerificationOptions = function (siteId) {
@@ -13356,24 +13162,41 @@ window.returnToLandmarkVerificationOptions = function (siteId) {
   setTimeout(() => window.switchSiteDetailTab?.('verification'), 0);
 };
 
-window.showPhotoGuideCompletionResult = function (site, option, xpAwarded = 0) {
+window.showPhotoVerificationResult = function (site, option, result, xpAwarded = 0) {
   document.getElementById('photo-comparison-result')?.remove();
   const overlay = document.createElement('div');
   overlay.id = 'photo-comparison-result';
-  overlay.className = 'photo-comparison-result is-passed';
+  overlay.className = `photo-comparison-result ${result.passed ? 'is-passed' : 'is-rejected'}`;
   const currentXP = Number(window.state?.user?.xp || window.state?.xp || 0);
+  const requiredScore = APP_RULES.verification.photoMatchPercent;
+  const scoreGap = Math.max(0, requiredScore - result.score);
+  const metrics = result.metrics || {};
   overlay.innerHTML = `
     <div class="photo-comparison-result-card" role="dialog" aria-modal="true" aria-labelledby="photo-result-title">
-      <div class="photo-result-status">GUIDED CAMERA STEP COMPLETE</div>
-      <div class="photo-result-score-ring"><strong>✓</strong><span>recorded</span></div>
-      <h2 id="photo-result-title">Guided camera step recorded</h2>
+      <div class="photo-result-status">${result.passed ? 'IMAGE VERIFICATION COMPLETE' : 'IMAGE VERIFICATION NOT COMPLETED'}</div>
+      <div class="photo-result-score-ring"><strong>${result.score}%</strong><span>match</span></div>
+      <h2 id="photo-result-title">${result.passed ? 'Reference image matched' : `Reference match below ${requiredScore}%`}</h2>
       <p class="photo-result-summary">
-        You completed the guided camera step for ${option.title}. The camera frame was used only during this step and was not saved.
+        ${result.passed
+          ? `Your photo matched ${option.title} by ${result.score}%, meeting the ${requiredScore}% requirement.`
+          : `Your photo matched ${option.title} by ${result.score}%. It needs ${scoreGap}% more to reach the ${requiredScore}% requirement.`}
       </p>
-      <div class="photo-result-xp">${xpAwarded ? `+${xpAwarded} XP recorded · Total ${currentXP} XP` : `Guided camera-step XP was already recorded · Total ${currentXP} XP`}</div>
+      <div class="photo-result-comparison">
+        <figure><img src="${result.referenceComparisonDataUrl}" alt="Reference area compared" /><figcaption>Reference area compared</figcaption></figure>
+        <figure><img src="${result.comparisonDataUrl}" alt="Camera area compared" /><figcaption>Camera area compared</figcaption></figure>
+      </div>
+      <div class="photo-result-metrics">
+        <span><strong>${metrics.structure || 0}%</strong>Structure</span>
+        <span><strong>${metrics.outline || 0}%</strong>Outline</span>
+        <span><strong>${metrics.color || 0}%</strong>Colour</span>
+        <span><strong>${metrics.framing || 0}%</strong>Framing</span>
+      </div>
+      ${result.passed
+        ? `<div class="photo-result-xp">${xpAwarded ? `+${xpAwarded} XP awarded · Total ${currentXP} XP` : `Photo-verification XP was already awarded · Total ${currentXP} XP`}</div>`
+        : `<div class="photo-result-guidance">Try again with the guide aligned to the same scale and edges. Only the area inside the guide is compared.</div>`}
       <div class="photo-result-actions">
-        <button type="button" id="retry-photo-option">Try ${option.title} Again</button>
-        <button type="button" id="choose-photo-option">Return to Options</button>
+        <button type="button" id="retry-photo-option">${result.passed ? 'Try This Option Again' : 'Retry This Option'}</button>
+        <button type="button" id="choose-photo-option">${result.passed ? 'Return to Verification' : 'Choose Another Option'}</button>
       </div>
     </div>
   `;
