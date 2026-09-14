@@ -367,7 +367,18 @@ window.resetBMICHProductionProgress = function (uid, storedProgress = {}) {
 
 window.loadCurrentSiteProgress = function () {
   if (!window.state) window.state = {};
+  const sessionMode = typeof window.getSessionMode === 'function'
+    ? window.getSessionMode()
+    : (window.state?.isGuest ? 'guest' : 'signed_out');
+  if (sessionMode === 'guest') {
+    window.state.siteProgress = {};
+    return window.state.siteProgress;
+  }
   const uid = auth?.currentUser?.uid || window.state?.user?.uid;
+  if (!uid) {
+    window.state.siteProgress = {};
+    return window.state.siteProgress;
+  }
   const key = window.getSiteProgressKey(uid);
   let stored = {};
   try {
@@ -378,15 +389,26 @@ window.loadCurrentSiteProgress = function () {
   stored = window.resetMuseumProductionProgress(uid, stored);
   stored = window.resetIndependenceProductionProgress(uid, stored);
   stored = window.resetBMICHProductionProgress(uid, stored);
-  window.state.siteProgress = {
-    ...stored,
-    ...(window.state.siteProgress || {})
-  };
+  const inMemoryProgress = window.state.siteProgressOwnerUid === uid
+    ? (window.state.siteProgress || {})
+    : {};
+  window.state.siteProgress = { ...stored, ...inMemoryProgress };
+  window.state.siteProgressOwnerUid = uid;
   return window.state.siteProgress;
 };
 
 window.getLandmarkAchievementStatus = function (siteId) {
   const cleanId = String(siteId || '').toLowerCase().trim();
+  if (typeof window.isGuestSession === 'function' && window.isGuestSession()) {
+    return {
+      locationVerified: false,
+      photoVerified: false,
+      quizPassed: false,
+      locationVerifiedAt: null,
+      photoOptionResults: {},
+      progress: {}
+    };
+  }
   const progress = window.loadCurrentSiteProgress();
   const site = progress[cleanId] || {};
   return {
@@ -505,34 +527,33 @@ window.resolveCanonicalUserProfile = async function (firebaseUser, authProvider 
           passwordProfilePhotoURL: '',
           activeAuthProvider: authProvider,
           linkedProviders: [authProvider],
-          xp: 50,
+          xp: 0,
           rank: 'Novice Explorer',
-          welcomeXPAwarded: true,
-          welcomeXPAwardedAt: serverTimestamp(),
-          welcomeBannerSeen: false,
+          welcomeXPAwarded: false,
+          welcomeBannerSeen: true,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp()
         };
 
         transaction.set(userDocRef, newProfile);
-        console.log(`[PROFILE-MERGE] created=true uid=${uid.slice(-6)} xp=50 welcomeXPAwarded=true`);
+        console.log(`[PROFILE-MERGE] created=true uid=${uid.slice(-6)} xp=0 welcomeXPAwarded=false`);
         return {
           ...newProfile,
-          xp: 50,
-          welcomeXPAwarded: true,
-          welcomeBannerSeen: false
+          xp: 0,
+          welcomeXPAwarded: false,
+          welcomeBannerSeen: true
         };
       } else {
         const existingData = userSnap.data();
-        const preservedXP = Number.isFinite(Number(existingData.xp)) ? Number(existingData.xp) : 50;
+        const preservedXP = Number.isFinite(Number(existingData.xp)) ? Number(existingData.xp) : 0;
         const updatedLinkedProviders = Array.from(new Set([...(existingData.linkedProviders || []), authProvider]));
 
         const updates = {
           emailNormalized: emailNorm,
           activeAuthProvider: authProvider,
           linkedProviders: updatedLinkedProviders,
-          welcomeXPAwarded: existingData.welcomeXPAwarded ?? true,
-          welcomeBannerSeen: existingData.welcomeBannerSeen ?? true,
+          welcomeXPAwarded: false,
+          welcomeBannerSeen: true,
           updatedAt: serverTimestamp()
         };
 
@@ -570,10 +591,10 @@ window.resolveCanonicalUserProfile = async function (firebaseUser, authProvider 
       preferredDisplayName: options.preferredDisplayName || firebaseUser.displayName || (emailNorm ? emailNorm.split('@')[0] : 'Explorer'),
       googleDisplayName: firebaseUser.displayName || '',
       googlePhotoURL: firebaseUser.photoURL || '',
-      xp: 50,
+      xp: 0,
       rank: 'Novice Explorer',
-      welcomeXPAwarded: true,
-      welcomeBannerSeen: false,
+      welcomeXPAwarded: false,
+      welcomeBannerSeen: true,
       isFallback: true
     };
   }
@@ -615,12 +636,12 @@ window.syncCanonicalProfileAsync = async function (firebaseUser, authProvider, o
       if (bmichResetRequired) delete remoteProgress.bmich;
 
       const activeUser = window.state.user || {};
-      const storedXP = Number.isFinite(Number(profile.xp)) ? Number(profile.xp) : (activeUser.xp || 50);
-      activeUser.xp = Math.max(50, storedXP - removedMuseumXP - removedIndependenceXP - removedBMICHXP);
+      const storedXP = Number.isFinite(Number(profile.xp)) ? Number(profile.xp) : (Number(activeUser.xp) || 0);
+      activeUser.xp = Math.max(0, storedXP - removedMuseumXP - removedIndependenceXP - removedBMICHXP);
       activeUser.preferredDisplayName = profile.preferredDisplayName || activeUser.preferredDisplayName;
       activeUser.googlePhotoURL = profile.googlePhotoURL || activeUser.googlePhotoURL;
-      activeUser.welcomeXPAwarded = profile.welcomeXPAwarded ?? true;
-      activeUser.welcomeBannerSeen = profile.welcomeBannerSeen ?? true;
+      activeUser.welcomeXPAwarded = false;
+      activeUser.welcomeBannerSeen = true;
       activeUser.profileStatus = "ready";
 
       if (profile.siteProgress && typeof profile.siteProgress === 'object') {
@@ -758,7 +779,7 @@ window.handlePostAuthUserSuccess = async function ({ firebaseUser, authProvider,
   }
   console.log(`[PROFILE-PHOTO] source=${photoSource}`);
 
-  const initialXP = matchingCache && Number.isFinite(Number(matchingCache.xp)) ? Number(matchingCache.xp) : 50;
+  const initialXP = matchingCache && Number.isFinite(Number(matchingCache.xp)) ? Number(matchingCache.xp) : 0;
 
   const userSession = {
     uid,
@@ -774,8 +795,8 @@ window.handlePostAuthUserSuccess = async function ({ firebaseUser, authProvider,
     linkedProviders: matchingCache?.linkedProviders || [authProvider],
     xp: initialXP,
     rank: matchingCache?.rank || 'Novice Explorer',
-    welcomeXPAwarded: matchingCache?.welcomeXPAwarded ?? true,
-    welcomeBannerSeen: matchingCache?.welcomeBannerSeen ?? true,
+    welcomeXPAwarded: false,
+    welcomeBannerSeen: true,
     isGuest: false,
     profileStatus: matchingCache ? "ready" : "loading"
   };
@@ -1046,15 +1067,65 @@ function navigate(targetScreen, params = {}) {
 }
 window.navigate = navigate;
 
-window.handleDashboardInteraction = function (actionRoute) {
+window.renderNavigationArrowIcon = function (direction = 'left') {
+  const isRight = direction === 'right';
+  const path = isRight ? 'M5 12h14M12 5l7 7-7 7' : 'M19 12H5m7 7-7-7 7-7';
+  return `<svg class="yl-navigation-arrow-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="${path}"/></svg>`;
+};
+
+window.upgradeNavigationArrows = function (root = document) {
+  root.querySelectorAll?.('button, a').forEach(element => {
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    const textNodes = [];
+    while (walker.nextNode()) {
+      if (/[←→]/.test(walker.currentNode.nodeValue || '')) textNodes.push(walker.currentNode);
+    }
+    textNodes.forEach(node => {
+      const parts = (node.nodeValue || '').split(/([←→])/);
+      const fragment = document.createDocumentFragment();
+      parts.forEach(part => {
+        if (part === '←' || part === '→') {
+          const holder = document.createElement('span');
+          holder.innerHTML = window.renderNavigationArrowIcon(part === '→' ? 'right' : 'left');
+          fragment.appendChild(holder.firstElementChild);
+        } else if (part) {
+          fragment.appendChild(document.createTextNode(part));
+        }
+      });
+      node.replaceWith(fragment);
+    });
+  });
+};
+
+if (!window.__navigationArrowObserver) {
+  window.__navigationArrowObserver = new MutationObserver(mutations => {
+    mutations.forEach(mutation => mutation.addedNodes.forEach(node => {
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      if (node.matches?.('button, a') || node.querySelector?.('button, a')) {
+        window.upgradeNavigationArrows(node);
+      }
+    }));
+  });
+  const beginArrowUpgrade = () => {
+    window.upgradeNavigationArrows(document);
+    window.__navigationArrowObserver.observe(document.body, { childList: true, subtree: true });
+  };
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', beginArrowUpgrade, { once: true });
+  } else {
+    beginArrowUpgrade();
+  }
+}
+
+window.handleDashboardInteraction = function (actionRoute, params = {}) {
   try {
     if (actionRoute === 'wanderer' || actionRoute === 'map') {
       console.log('[MAP-ACTUAL 01] home map action click received');
     }
     if (typeof executeAppNavigation === 'function') {
-      executeAppNavigation(actionRoute);
+      executeAppNavigation(actionRoute, params);
     } else if (typeof window.navigate === 'function') {
-      window.navigate(actionRoute);
+      window.navigate(actionRoute, params);
     } else {
       window.location.hash = `#${actionRoute}`;
     }
@@ -1215,7 +1286,7 @@ window.initAppRouter = async function () {
       displayName: resolvedName,
       email: email,
       password: pendingUser.password || '',
-      xp: 50,
+      xp: Number.isFinite(Number(verifiedDb[email]?.xp)) ? Number(verifiedDb[email].xp) : 0,
       medals: 0,
       sitesVisited: 0,
       quizzesPassed: 0,
@@ -1581,7 +1652,7 @@ window.renderDashboardHeader = function () {
   }
 
   let displayName = currentUser.preferredDisplayName || currentUser.displayName || currentUser.name || 'Explorer';
-  const xpCount = Number.isFinite(Number(currentUser.xp)) ? Number(currentUser.xp) : 50;
+  const xpCount = Number.isFinite(Number(currentUser.xp)) ? Number(currentUser.xp) : 0;
 
   const rankInfo = typeof getRankProgress === 'function' ? getRankProgress(xpCount) : {
     currentRank: { name: 'Novice Explorer' },
@@ -1636,7 +1707,7 @@ window.renderDashboardHeader = function () {
               Congratulations & Ayubowan!
             </div>
             <div style="font-size: 11px; color: #15803D; font-weight: 600; margin-top: 1px;">
-              Welcome to YathraLanka. <strong>+50 XP</strong> welcome gift credited to begin your quest!
+              Your account is ready. Complete verified heritage activities to earn XP.
             </div>
           </div>
         </div>
@@ -1749,7 +1820,7 @@ window.handleGoogleSignInSuccess = function (googleUser) {
           displayName: googleDisplayName,
           email: email,
           authProvider: 'google',
-          xp: 50,
+          xp: 0,
           medals: 0,
           sitesVisited: 0,
           quizzesPassed: 0,
@@ -1820,13 +1891,12 @@ window.renderWelcomeModal = function ({ name, email, isGoogleUser }) {
         <p style="margin: 0 0 20px 0; font-size: 13px; color: #4A3E2C; line-height: 1.55;">
           Welcome to YathraLanka. You have joined our expedition to explore, document, and protect Sri Lanka’s cultural treasures.
         </p>
-        <div style="background: #FEF3C7; border: 1.5px solid #F59E0B; border-radius: 14px; padding: 14px 16px; margin-bottom: 24px;">
-          <div style="font-size: 22px; line-height: 1; margin-bottom: 4px;">🎁</div>
-          <div style="font-size: 14.5px; font-weight: 800; color: #92400E; margin-bottom: 2px;">
-            +50 Experience Points Awarded!
+        <div style="background: #F0FDF4; border: 1.5px solid #86EFAC; border-radius: 14px; padding: 14px 16px; margin-bottom: 24px;">
+          <div style="font-size: 14.5px; font-weight: 800; color: #166534; margin-bottom: 2px;">
+            Your explorer account is ready
           </div>
-          <div style="font-size: 11.5px; font-weight: 600; color: #78350F; line-height: 1.4;">
-            Ayubowan & Congratulations! Your journey into Sri Lanka's heritage begins now.
+          <div style="font-size: 11.5px; font-weight: 600; color: #15803D; line-height: 1.4;">
+            Complete verified heritage activities to earn XP and achievements.
           </div>
         </div>
         <button id="btn-enter-yathralanka" style="width: 100%; background-color: #EAA335; color: #182226; font-size: 14.5px; font-weight: 800; border: 1px solid #F6BE68; padding: 15px 20px; border-radius: 12px; cursor: pointer; box-shadow: 0 6px 18px rgba(234, 163, 53, 0.42);">
@@ -1916,7 +1986,7 @@ window.handleAuthSubmit = async function (type, event) {
   const pendingDb = JSON.parse(localStorage.getItem('yathralanka_pending_users') || '{}');
 
   const completeUserSession = (userRecord) => {
-    if (!userRecord.xp) userRecord.xp = 50;
+    if (!Number.isFinite(Number(userRecord.xp))) userRecord.xp = 0;
     userRecord.isLoggedIn = true;
     userRecord.isGuest = false;
     userRecord.dashboard_visits = (userRecord.dashboard_visits || 0) + 1;
@@ -1945,7 +2015,7 @@ window.handleAuthSubmit = async function (type, event) {
       displayName: existing.displayName || "Rajitha Amarasinghe",
       email: "amarasinghesl@gmail.com",
       password: "Aa01",
-      xp: existing.xp || 50,
+      xp: Number.isFinite(Number(existing.xp)) ? Number(existing.xp) : 0,
       level: existing.level || "Ancient Heritage Explorer",
       title: existing.title || "Guardian of Heritage",
       rank: existing.rank || "Senior Explorer",
@@ -1978,12 +2048,10 @@ window.handleAuthSubmit = async function (type, event) {
           name: fbUser.displayName || email.split('@')[0],
           displayName: fbUser.displayName || email.split('@')[0],
           email: email,
-          xp: 50,
-          level: "Ancient Heritage Explorer",
-          title: "Guardian of Heritage",
-          rank: "Senior Explorer",
-          badges: ["Heritage Pioneer"],
-          unlockedSites: ["national_museum_colombo"],
+          xp: 0,
+          rank: "Novice Explorer",
+          badges: [],
+          unlockedSites: [],
           authProvider: 'email'
         };
         completeUserSession(fbUserRecord);
@@ -2054,14 +2122,12 @@ function showFirstTimeWelcomeModal(user) {
         Welcome to YathraLanka. You have joined our expedition to explore, document, and protect Sri Lanka’s cultural treasures.
       </p>
       
-      <!-- Celebratory Reward Box -->
-      <div style="background: #FEF3C7; border: 1.5px solid #F59E0B; border-radius: 14px; padding: 14px 16px; margin-bottom: 24px;">
-        <div style="font-size: 22px; line-height: 1; margin-bottom: 4px;">🎁</div>
-        <div style="font-size: 14.5px; font-weight: 800; color: #92400E; margin-bottom: 2px;">
-          +50 Experience Points Awarded!
+      <div style="background: #F0FDF4; border: 1.5px solid #86EFAC; border-radius: 14px; padding: 14px 16px; margin-bottom: 24px;">
+        <div style="font-size: 14.5px; font-weight: 800; color: #166534; margin-bottom: 2px;">
+          Your explorer account is ready
         </div>
-        <div style="font-size: 11.5px; font-weight: 600; color: #78350F; line-height: 1.4;">
-          Ayubowan & Congratulations! Your journey into Sri Lanka's heritage begins now.
+        <div style="font-size: 11.5px; font-weight: 600; color: #15803D; line-height: 1.4;">
+          Complete verified heritage activities to earn XP and achievements.
         </div>
       </div>
 
@@ -2080,7 +2146,7 @@ function showFirstTimeWelcomeModal(user) {
     const usersDb = JSON.parse(localStorage.getItem('yathralanka_users') || '{}');
     if (usersDb[user.email]) {
       usersDb[user.email].dashboard_visits = 1;
-      usersDb[user.email].showFirstRewardCard = true;
+      usersDb[user.email].showFirstRewardCard = false;
       localStorage.setItem('yathralanka_users', JSON.stringify(usersDb));
       localStorage.setItem('yathralanka_active_user', JSON.stringify(usersDb[user.email]));
       if (window.state) window.state.user = usersDb[user.email];
@@ -2112,6 +2178,7 @@ window.goToDashboardScreen = navigateToDashboard;
 window.navigateToDashboard = navigateToDashboard;
 
 function injectFirstTimeRewardCard() {
+  return;
   const activeUser = JSON.parse(localStorage.getItem('yathralanka_active_user') || '{}');
   if (!activeUser || !activeUser.showFirstRewardCard) return;
   if (document.getElementById('first-visit-xp-box')) return;
@@ -2125,8 +2192,8 @@ function injectFirstTimeRewardCard() {
       <div style="display: flex; align-items: center; gap: 12px; text-align: left;">
         <span style="font-size: 24px;">🎁</span>
         <div>
-          <div style="font-size: 13.5px; font-weight: 800; color: #92400E;">+50 Experience Points Awarded!</div>
-          <div style="font-size: 11px; font-weight: 600; color: #78350F;">Ayubowan & Congratulations! Your journey into Sri Lanka's heritage begins now.</div>
+          <div style="font-size: 13.5px; font-weight: 800; color: #92400E;">Explorer account ready</div>
+          <div style="font-size: 11px; font-weight: 600; color: #78350F;">Complete verified heritage activities to earn XP.</div>
         </div>
       </div>
       <button onclick="document.getElementById('first-visit-xp-box').remove()" style="background: none; border: none; font-size: 16px; color: #92400E; cursor: pointer; font-weight: 800; padding: 0 4px;">✕</button>
@@ -2183,6 +2250,7 @@ window.processDashboardEntry = function (source = 'direct') {
 // 5. DASHBOARD FIRST-VISIT REWARD BANNER
 // ============================================================================
 function renderDashboardFirstVisitRewardBanner() {
+  return;
   setTimeout(() => {
     const dashboardContainer = document.querySelector('.dashboard-container') || document.getElementById('app');
     if (!dashboardContainer) return;
@@ -2207,8 +2275,8 @@ function renderDashboardFirstVisitRewardBanner() {
       <div style="display: flex; align-items: center; gap: 12px; text-align: left;">
         <span style="font-size: 24px;">🎁</span>
         <div>
-          <div style="font-size: 14px; font-weight: 800; color: #92400E;">Welcome Bonus: +50 XP Added!</div>
-          <div style="font-size: 11.5px; font-weight: 600; color: #78350F;">First expedition milestone achieved. Rank: Guardian.</div>
+          <div style="font-size: 14px; font-weight: 800; color: #92400E;">Explorer account ready</div>
+          <div style="font-size: 11.5px; font-weight: 600; color: #78350F;">Complete verified heritage activities to earn XP.</div>
         </div>
       </div>
       <button onclick="document.getElementById('first-visit-xp-banner').remove()" style="background: none; border: none; font-size: 18px; color: #92400E; cursor: pointer; font-weight: 800; padding: 4px 8px;">✕</button>
@@ -2262,12 +2330,10 @@ window.state = {
   cooldownTimeLeft: 300, // 05:00 mins in seconds
   cooldownActive: false,
 
-  // Verification & Cryptographic Ledger Engine
+  // Verification state. The camera is a framing aid and GPS is the verification factor.
   verificationComment: "",
   lastVerificationResult: null,
   lastKnownLocation: null,
-  eventLedger: JSON.parse(localStorage.getItem('yathra_event_ledger') || '[]'),
-  ledgerFilter: 'ALL',
   // Quiz active state
   currentQuizIndex: 0,
   quizCorrectAnswers: 0,
@@ -2505,7 +2571,7 @@ window.recalculateTotalXP = function () {
     }
   });
 
-  let baseXP = Number.isFinite(Number(window.state?.user?.xp)) ? Number(window.state.user.xp) : 50;
+  let baseXP = Number.isFinite(Number(window.state?.user?.xp)) ? Number(window.state.user.xp) : 0;
 
   let completionBonus = 0;
   Object.values(completedSites).forEach(siteData => {
@@ -2539,6 +2605,9 @@ window.awardSiteXP = function (siteId, phase) {
 
 window.awardLandmarkXP = function (siteId, phase) {
   if (!window.state) window.state = {};
+  if (typeof window.isGuestSession === 'function' && window.isGuestSession()) {
+    return 0;
+  }
   const currentUid = auth?.currentUser?.uid || window.state?.user?.uid;
   const siteProgressKey = window.getSiteProgressKey(currentUid);
   const completedSitesKey = window.getCompletedSitesKey(currentUid);
@@ -2627,43 +2696,9 @@ window.awardLandmarkXP = function (siteId, phase) {
   return prog;
 };
 
+// Automatic medal awards stay disabled until the final achievement rules are approved.
 window.checkAndAwardSmartMedals = function () {
-  if (!window.state) return;
-  if (!window.state.unlockedMedals) {
-    try {
-      window.state.unlockedMedals = JSON.parse(localStorage.getItem('yathra_unlocked_medals') || '[]');
-    } catch (e) {
-      window.state.unlockedMedals = [];
-    }
-  }
-
-  const medals = [
-    { id: 'pathfinder_kingdom', title: 'Pathfinder of the Kingdom', tier: 'Bronze', xp: 150, cond: () => (window.state.user?.sitesVisited >= 3 || Object.keys(window.state.siteProgress || {}).length >= 3) },
-    { id: 'royal_chronicler', title: 'Royal Chronicler', tier: 'Silver', xp: 200, cond: () => (Object.values(window.state.siteProgress || {}).filter(p => p.photoVerified).length >= 5 || window.state.user?.sitesVisited >= 5) },
-    { id: 'guardian_polonnaruwa', title: 'Guardian of Polonnaruwa', tier: 'Gold', xp: 300, cond: () => (window.state.user?.quizzesPassed >= 1 && window.state.user?.sitesVisited >= 1) },
-    { id: 'lankan_cartographer', title: 'Lankan Cartographer', tier: 'Diamond', xp: 500, cond: () => (window.state.user?.sitesVisited >= 5) },
-    { id: 'sage_mahavamsa', title: 'Sage of the Mahavamsa', tier: 'Master Relic', xp: 400, cond: () => (window.state.user?.quizzesPassed >= 10) }
-  ];
-
-  medals.forEach(m => {
-    if (!window.state.unlockedMedals.includes(m.id) && m.cond()) {
-      window.state.unlockedMedals.push(m.id);
-      window.state.xp = (window.state.xp || 0) + m.xp;
-      if (window.state.user) {
-        window.state.user.xp = (window.state.user.xp || 0) + m.xp;
-        window.state.user.medals = window.state.unlockedMedals.length;
-      }
-      try {
-        localStorage.setItem('yathra_unlocked_medals', JSON.stringify(window.state.unlockedMedals));
-        localStorage.setItem('yathra_user_xp', String(window.state.xp));
-        if (window.state.user) localStorage.setItem('yathra_current_user', JSON.stringify(window.state.user));
-      } catch (e) { }
-
-      if (typeof window.showNotification === 'function') {
-        window.showNotification(`🏆 S.M.A.R.T. Medal Unlocked: ${m.title} (+${m.xp} XP)!`, "success");
-      }
-    }
-  });
+  return window.state?.unlockedMedals || [];
 };
 
 // Strict Site Checkpoint Verifier
@@ -2715,7 +2750,7 @@ window.verifySiteCheckpoint = function (siteId) {
       const distanceKm = window.calculateDistanceKm(userLat, userLng, siteCoords.lat, siteCoords.lng);
       console.log(`📡 User: (${userLat.toFixed(4)}, ${userLng.toFixed(4)}) ➡️ ${site.name} (${siteCoords.lat}, ${siteCoords.lng}): ${distanceKm.toFixed(1)} km`);
 
-      if (distanceKm <= 0.5 || distanceKm === 0 || isNaN(distanceKm)) {
+      if (Number.isFinite(distanceKm) && distanceKm <= 0.5) {
         if (!window.state) window.state = {};
         window.state.siteLocationVerified = site.id;
         // Location XP is awarded only after the full 15-minute presence session.
@@ -2925,6 +2960,7 @@ window.showVerificationModal = function (site, xpEarned, title, message) {
 
 // Universal Site Detail Opener (Delegates to authoritative definition at line 3411)
 window.selectAndOpenSite = function (siteId) {
+  if (typeof window.isProductionSite === 'function' && !window.isProductionSite(siteId)) return;
   if (typeof window.executeAppNavigation === 'function') {
     return window.executeAppNavigation('site-detail', { id: siteId });
   }
@@ -2961,17 +2997,8 @@ window.forceRenderDirectory = function () {
   }
 };
 
-const LEGACY_PRESENTATION_EVENT_IDS = new Set([
-  'EVT-20260820-9A7F',
-  'EVT-20260820-8B3E',
-  'EVT-20260820-7C1D',
-  'EVT-20260820-6D9A'
-]);
-const cleanedEventLedger = (state.eventLedger || []).filter(event => !LEGACY_PRESENTATION_EVENT_IDS.has(event?.eventId));
-if (cleanedEventLedger.length !== (state.eventLedger || []).length) {
-  state.eventLedger = cleanedEventLedger;
-  localStorage.setItem('yathra_event_ledger', JSON.stringify(state.eventLedger));
-}
+// Remove presentation-era local records that implied a cryptographic audit system.
+localStorage.removeItem('yathra_event_ledger');
 
 // --- CORE GEOLOCATION & MULTI-FACTOR VERIFICATION ENGINE ---
 function calculateHaversineDistanceMeters(lat1, lon1, lat2, lon2) {
@@ -3008,79 +3035,40 @@ function evaluateAntiSpoofingGuard(userLat, userLng, currentTimestamp = Date.now
 function evaluateVisionInspection(site, userLat, userLng, capturedImageSrc, imageTimestamp = Date.now()) {
   const targetLat = site.latitude;
   const targetLng = site.longitude;
+  const hasValidCoordinates = [userLat, userLng, targetLat, targetLng].every(Number.isFinite);
+  if (!hasValidCoordinates) {
+    const comment = 'Current location is unavailable. Enable precise location access and try again.';
+    state.lastVerificationResult = { status: 'LOCATION_UNAVAILABLE', distanceMeters: null, distanceDeltaMeters: null, comment, block: null };
+    state.verificationComment = comment;
+    return state.lastVerificationResult;
+  }
   const distanceMeters = calculateHaversineDistanceMeters(userLat, userLng, targetLat, targetLng);
   const geofenceRadius = GEOFENCE_RADIUS_METERS || 500;
 
-  const spoofCheck = evaluateAntiSpoofingGuard(userLat, userLng, imageTimestamp);
+  // The camera is a guided completion step. Version 1 makes no image-recognition claim,
+  // retains no captured frame, and uses the approved GPS boundary as the site check.
+  void capturedImageSrc;
+  void imageTimestamp;
+  const status = distanceMeters <= geofenceRadius ? 'PASSED' : 'OUT_OF_BOUNDS';
+  const comment = status === 'PASSED'
+    ? `Guided camera step completed ${distanceMeters} metres from the approved location.`
+    : `You are ${distanceMeters} metres from the approved location. Move within ${geofenceRadius} metres and try again.`;
 
-  let visionScore = 88;
-  if (capturedImageSrc && capturedImageSrc.length > 50) {
-    let hash = 0;
-    for (let i = 0; i < capturedImageSrc.length; i++) {
-      hash = (hash << 5) - hash + capturedImageSrc.charCodeAt(i);
-      hash |= 0;
-    }
-    visionScore = 75 + Math.abs(hash % 24);
-  }
-
-  let status = 'PASSED';
-  let comment = '';
-
-  if (spoofCheck.isSpoof) {
-    status = 'SPOOF_SUSPECTED';
-    comment = `Security Anomaly Intercepted: ${spoofCheck.reason}`;
-  } else if (distanceMeters > geofenceRadius) {
-    status = 'OUT_OF_BOUNDS';
-    comment = `Geofence Delta Alert: Device is ${distanceMeters}m from site coordinates (Geofence Threshold: ${geofenceRadius}m).`;
-  } else if (visionScore < 75) {
-    status = 'FAILED_VISION';
-    comment = `Vision Model Rejection: Landmark feature match score (${visionScore}%) is below required 75% threshold.`;
-  } else {
-    status = 'PASSED';
-    comment = `Verification Successful: Landmark geometry matches reference dataset (${visionScore}% Confidence). Distance Delta: ${distanceMeters}m.`;
-  }
-
-  const block = recordVerificationLedgerEvent(site, userLat, userLng, distanceMeters, visionScore, status, capturedImageSrc);
-  state.lastVerificationResult = { status, visionScore, distanceMeters, comment, block };
+  state.lastVerificationResult = { status, distanceMeters, distanceDeltaMeters: distanceMeters, comment, block: null };
   state.verificationComment = comment;
 
   return state.lastVerificationResult;
 }
 
 function recordVerificationLedgerEvent(site, userLat, userLng, distanceMeters, visionScore, status, imageSrc) {
-  const eventId = "EVT-" + Date.now().toString(36).toUpperCase() + "-" + Math.random().toString(36).substring(2, 6).toUpperCase();
-  const timestamp = new Date().toISOString();
-
-  const rawPayload = `${eventId}:${timestamp}:${site.id}:${userLat}:${userLng}:${distanceMeters}:${visionScore}:${status}`;
-  let hashVal = 0;
-  for (let i = 0; i < rawPayload.length; i++) {
-    hashVal = (hashVal << 7) - hashVal + rawPayload.charCodeAt(i);
-    hashVal |= 0;
-  }
-  const signature = "0x" + Math.abs(hashVal).toString(16).padStart(8, '0') + Math.abs(hashVal * 31).toString(16).padEnd(24, 'f').substring(0, 56);
-
-  const block = {
-    eventId,
-    timestamp,
-    siteId: site.id,
-    siteName: site.name,
-    userCoords: { latitude: userLat, longitude: userLng, accuracy: 5.0 },
-    targetCoords: { latitude: site.latitude, longitude: site.longitude },
-    distanceDeltaMeters: distanceMeters,
-    visionScore,
-    status,
-    imageMetadata: {
-      sizeBytes: imageSrc ? imageSrc.length : 172000,
-      mimeType: "image/jpeg",
-      hash: "SHA256-" + signature.substring(2, 18)
-    },
-    signature
-  };
-
-  if (!state.eventLedger) state.eventLedger = [];
-  state.eventLedger.unshift(block);
-  localStorage.setItem('yathra_event_ledger', JSON.stringify(state.eventLedger));
-  return block;
+  void site;
+  void userLat;
+  void userLng;
+  void distanceMeters;
+  void visionScore;
+  void status;
+  void imageSrc;
+  return null;
 }
 
 // Global reference for location intervals
@@ -3204,8 +3192,17 @@ window.continueAsGuest = async function (e) {
     window.state.isGuest = true;
     window.state.isLoggedIn = false;
     window.state.sessionMode = 'guest';
+    window.state.siteProgress = {};
+    window.state.siteProgressOwnerUid = null;
+    window.state.siteLocationVerified = null;
+    window.state.locationVerified = false;
+    window.state.photoVerified = false;
+    window.state.activeQuizSession = null;
     window.state.currentScreen = 'home';
     window.state.currentParams = {};
+
+    // Verification timers belong to a signed-in visit and must not appear in guest mode.
+    localStorage.removeItem('yathralanka_active_landmark_session_v1');
 
     // DO NOT call native GoogleAuth.signOut() in the guest-entry path
 
@@ -3451,18 +3448,8 @@ window.getActiveUser = function () {
 // ============================================================================
 // 2. LEVEL PROGRESSION ENGINE
 // ============================================================================
-const LEVEL_LADDER = [
-  { minXP: 1000, title: "Heritage Guardian" },
-  { minXP: 600, title: "Ancient Chronicler" },
-  { minXP: 300, title: "Cultural Voyager" },
-  { minXP: 100, title: "Heritage Seeker" },
-  { minXP: 0, title: "Novice Explorer" }
-];
-
 window.calculateLevelTitle = function (xp) {
-  const points = Number(xp) || 0;
-  const match = LEVEL_LADDER.find(tier => points >= tier.minXP);
-  return match ? match.title : "Novice Explorer";
+  return getRankProgress(xp).currentRank.name;
 };
 
 // ============================================================================
@@ -3470,7 +3457,7 @@ window.calculateLevelTitle = function (xp) {
 // ============================================================================
 function createNewUserSchema({ name, email, avatar = null, provider = 'email', password = null }) {
   const now = new Date().toISOString();
-  const initialXP = 50; // First-Time Explorer Welcome Bonus
+  const initialXP = 0;
 
   return {
     id: 'usr_' + Math.random().toString(36).substring(2, 9) + Date.now().toString(36),
@@ -3481,7 +3468,7 @@ function createNewUserSchema({ name, email, avatar = null, provider = 'email', p
     provider: provider,
     isGuest: false,
 
-    // Core Progression (Starts with 50 XP Welcome Gift)
+    // Core progression starts at zero. XP is earned through verified activities.
     xp: initialXP,
     level: window.calculateLevelTitle(initialXP),
 
@@ -3502,7 +3489,7 @@ function createNewUserSchema({ name, email, avatar = null, provider = 'email', p
     screenVisits: { welcome: 1, auth: 1, home: 1 },
     featuresUsed: { arCamera: 0, quizCompleted: 0, audioPlayed: 0, sitesVisited: 0 },
     completedQuests: [],
-    unlockedBadges: ["Pioneer Explorer"],
+    unlockedBadges: [],
     activityLog: [
       {
         timestamp: now,
@@ -3759,8 +3746,10 @@ if (!window.state) {
 
 // Open Auth Screen from Inside as Guest (SHOWS BACK BUTTON)
 window.openAuthAsGuest = function (fromScreen = 'home') {
+  if (!window.state) window.state = {};
   window.state.authActiveTab = 'signin';
-  window.state.authOrigin = fromScreen; // Enables back button returning to fromScreen
+  window.state.authOrigin = fromScreen || window.state.currentScreen || 'home';
+  window.state.authOriginParams = { ...(window.state.currentParams || {}) };
   window.navigate('auth');
 };
 
@@ -3828,7 +3817,7 @@ window.renderProfileScreen = function (params = {}) {
           <div style="font-size: 32px; margin-bottom: 8px;">🧭</div>
           <h3 style="margin: 0 0 6px 0; font-size: 16px; font-weight: 800; color: #125463;">Exploring as a Guest</h3>
           <p style="margin: 0 0 16px 0; font-size: 12px; color: #64748B; line-height: 1.5;">
-            You are exploring as a Guest. Sign in to save earned badges, claim merchant rewards, and access leaderboards.
+            You are exploring as a Guest. Sign in to save earned achievements and rank progress.
           </p>
           <button onclick="typeof window.openAuthScreen === 'function' ? window.openAuthScreen('signin') : (window.showAuthModal ? window.showAuthModal('signin') : window.renderLanding())" style="width: 100%; background: #125463; color: #FFFFFF; font-size: 13px; font-weight: 700; border: none; padding: 11px; border-radius: 10px; cursor: pointer;">
             Sign In / Create Account
@@ -3845,7 +3834,7 @@ window.renderProfileScreen = function (params = {}) {
     // ------------------------------------------------------------------------
     const displayName = currentUser.name || 'Explorer';
     const email = currentUser.email || '';
-    const xp = currentUser.xp || 50;
+    const xp = Number.isFinite(Number(currentUser.xp)) ? Number(currentUser.xp) : 0;
     const medals = currentUser.medals || 0;
     const sitesVisited = currentUser.sitesVisited || 0;
     const quizzesPassed = currentUser.quizzesPassed || 0;
@@ -4147,7 +4136,7 @@ window.executeAppNavigation = function (targetScreen, params = {}) {
             window.state.siteReferrer = 'directory';
             window.state.siteReferrerParams = paramsBefore;
           }
-          window.state.siteDetailTab = 'overview';
+          if (!params?.preserveTab) window.state.siteDetailTab = 'overview';
           const reqId = params?.id || params?.siteId || window.state?.activeSite?.id || null;
           console.log(`[SITE-RUNTIME 01] tap id=${reqId}`);
 
@@ -4249,7 +4238,7 @@ window.executeAppNavigation = function (targetScreen, params = {}) {
         break;
 
       case 'rewards':
-        htmlContent = typeof renderRewardsDashboard === 'function' ? renderRewardsDashboard(params) : '<div>Rewards loading...</div>';
+        htmlContent = typeof renderRewardsDashboard === 'function' ? renderRewardsDashboard(params) : '<div>Achievements loading...</div>';
         break;
 
       case 'rewards-list':
@@ -4281,7 +4270,7 @@ window.executeAppNavigation = function (targetScreen, params = {}) {
         break;
 
       case 'ledger':
-        htmlContent = typeof renderLedger === 'function' ? renderLedger() : '';
+        htmlContent = typeof renderDashboard === 'function' ? renderDashboard() : '<div>Home</div>';
         break;
 
       case 'travel-poster':
@@ -4328,6 +4317,11 @@ window.executeAppNavigation = function (targetScreen, params = {}) {
           }
         }
       }
+      if (window.state?.siteDetailTab === 'verification' && !isValidLocationCoordinatePair(window.userCoordinates || window.state?.userCoordinates)) {
+        setTimeout(() => {
+          window.refreshCurrentLocationForVerification?.(window.state?.activeSite?.id, false).catch(() => {});
+        }, 0);
+      }
     }
 
     // AUTH UI VERIFICATION CHECK
@@ -4345,6 +4339,8 @@ window.executeAppNavigation = function (targetScreen, params = {}) {
     let bodyFooter = document.getElementById('body-direct-global-nav');
 
     if (primaryNavScreens.includes(targetScreen)) {
+      // Keep one navigation bar: primary screens use the router-owned footer.
+      viewport.querySelectorAll('.global-bottom-nav').forEach((nav) => nav.remove());
       let activeTab = 'home';
       if (targetScreen === 'activism') activeTab = 'activism';
       else if (targetScreen === 'rewards') activeTab = 'rewards';
@@ -4391,6 +4387,11 @@ window.showProximityGateModal = function (site, distMeters) {
   const existing = document.getElementById('proximity-gate-modal-overlay');
   if (existing) existing.remove();
 
+  const hasValidDistance = Number.isFinite(Number(distMeters)) && Number(distMeters) >= 0;
+  if (!hasValidDistance) {
+    window.refreshCurrentLocationForVerification?.(site?.id, true);
+    return;
+  }
   const distStr = distMeters >= 1000 ? (distMeters / 1000).toFixed(1) + " km" : Math.round(distMeters) + " meters";
   const siteName = site ? (site.name || 'this landmark') : 'this landmark';
 
@@ -4403,7 +4404,7 @@ window.showProximityGateModal = function (site, distMeters) {
 
   const sId = site ? site.id : '';
   const origin = window.state?.siteReferrer === 'map' ? 'map' : 'directory';
-  const originLabel = origin === 'map' ? 'Return to Main Map' : 'Return to Directory';
+  const originLabel = origin === 'map' ? 'Back to Map' : 'Back to Directory';
 
   backdrop.innerHTML = `
     <div style="background: #FFFFFF; border-radius: 20px; padding: 24px; max-width: 380px; width: 100%; box-shadow: 0 10px 30px rgba(0,0,0,0.25); text-align: center; border-top: 5px solid #EBB34D; box-sizing: border-box;">
@@ -4414,6 +4415,12 @@ window.showProximityGateModal = function (site, distMeters) {
         You are <strong>${distStr}</strong> away from <strong>${siteName}</strong>. Visit within 500 metres to unlock photo verification and checkpoints.
       </p>
       <div style="display: flex; flex-direction: column; gap: 10px;">
+        <button
+          id="btn-proximity-recheck"
+          onclick="window.retryVerificationLocationCheck('${sId}')"
+          style="width: 100%; background: #EBB34D; color: #17202A; border: none; padding: 12px 16px; border-radius: 12px; font-weight: 800; font-size: 13.5px; cursor: pointer;">
+          Check Location Again
+        </button>
         <button 
           id="btn-proximity-quiz"
           onclick="document.getElementById('proximity-gate-modal-overlay').remove(); window.returnToSiteOverview('${sId}');"
@@ -4431,6 +4438,43 @@ window.showProximityGateModal = function (site, distMeters) {
   `;
 
   document.body.appendChild(backdrop);
+};
+
+window.showVerificationLocationCheckingModal = function (site) {
+  document.getElementById('proximity-gate-modal-overlay')?.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'proximity-gate-modal-overlay';
+  overlay.className = 'verification-location-overlay';
+  overlay.innerHTML = `
+    <div class="verification-location-card" role="dialog" aria-modal="true" aria-live="polite">
+      <div class="verification-location-spinner" aria-hidden="true"></div>
+      <h3>Checking your location...</h3>
+      <p>Confirming your distance from <strong>${site?.name || 'this landmark'}</strong>. Keep Location and Precise Location enabled.</p>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  return overlay;
+};
+
+window.showVerificationLocationUnavailableModal = function (site, message) {
+  document.getElementById('proximity-gate-modal-overlay')?.remove();
+  const origin = window.state?.siteReferrer === 'map' ? 'map' : 'directory';
+  const overlay = document.createElement('div');
+  overlay.id = 'proximity-gate-modal-overlay';
+  overlay.className = 'verification-location-overlay';
+  overlay.innerHTML = `
+    <div class="verification-location-card" role="dialog" aria-modal="true">
+      <div class="verification-location-icon">📍</div>
+      <h3>Location could not be confirmed</h3>
+      <p>${message || 'Turn on Location and Precise Location, move to an open area, and try again.'}</p>
+      <div class="verification-location-actions">
+        <button class="is-primary" onclick="window.retryVerificationLocationCheck('${site?.id || ''}')">Try Again</button>
+        <button onclick="document.getElementById('proximity-gate-modal-overlay')?.remove(); window.returnToSiteOverview('${site?.id || ''}')">Return to ${site?.name || 'Landmark'} Overview &amp; Quiz</button>
+        <button onclick="document.getElementById('proximity-gate-modal-overlay')?.remove(); window.handleLandmarkBack()">Back to ${origin === 'map' ? 'Map' : 'Directory'}</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
 };
 
 window.selectAndOpenSite = function (siteId) {
@@ -4725,7 +4769,7 @@ window.initLeafletMapInstance = function (containerEl = null, params = {}) {
     try {
       const processedCoords = [];
       const labelEntries = [];
-      const allSites = typeof getDirectoryDataset === 'function' ? getDirectoryDataset() : [];
+      const allSites = (window.sitesData || sitesData || []).filter(site => site && site.latitude && site.longitude);
       const priorityLabels = new Set([
         'colombo_museum', 'independence_memorial_hall', 'sigiriya',
         'temple_of_the_tooth', 'ruwanweliseya', 'galle_fort', 'dowa_temple'
@@ -4742,14 +4786,6 @@ window.initLeafletMapInstance = function (containerEl = null, params = {}) {
         const markerSymbol = hasAchievement ? '✓' : '';
         const markerSize = fullyVerified ? 26 : (hasAchievement ? 24 : 22);
 
-        processedCoords.forEach(existing => {
-          if (typeof window.calculateDistanceKm === 'function') {
-            const d = window.calculateDistanceKm(coords.lat, coords.lng, existing.lat, existing.lng);
-            if (d < 2.5) {
-              coords = { lat: coords.lat + 0.022, lng: coords.lng + 0.022 };
-            }
-          }
-        });
         processedCoords.push(coords);
 
         const icon = L.divIcon({
@@ -4916,13 +4952,7 @@ function goBack() {
 
 function addXP(amount, message = '') {
   state.user.xp += amount;
-
-  let currentRank = 'None';
-  rankingScale.forEach(lvl => {
-    if (state.user.xp >= lvl.threshold) {
-      currentRank = lvl.rank;
-    }
-  });
+  const currentRank = getRankProgress(state.user.xp).currentRank.name;
 
   if (state.user.rank !== currentRank) {
     state.user.rank = currentRank;
@@ -5139,7 +5169,7 @@ function initAuthListener() {
         emailNormalized: window.normalizeEmail(user.email),
         photoURL: user.photoURL || '/assets/royal-avatar.png',
         googlePhotoURL: user.photoURL || '',
-        xp: 50,
+        xp: 0,
         rank: 'Novice Explorer',
         isGuest: false,
         profileStatus: "loading"
@@ -5579,7 +5609,9 @@ window.addEventListener('pageshow', () => {
 
 // Global Helper: Open Auth screen while remembering where the guest was
 window.openAuthFromCurrentScreen = function () {
-  window.navigate('auth');
+  const current = window.state?.currentScreen || 'home';
+  const destination = current === 'wanderer' ? 'map' : current;
+  window.openAuthAsGuest(destination);
 };
 
 // Return Guest to their Exact Prior State
@@ -5617,11 +5649,12 @@ window.handleAuthBackClick = function () {
     return;
   }
   const destination = window.state?.authOrigin || window.state?.guestPreviousScreen || 'welcome';
+  const destinationParams = window.state?.authOriginParams || {};
   console.log(`[AUTH-RETURN] action=back origin=${destination}`);
   if (typeof window.executeAppNavigation === 'function') {
-    window.executeAppNavigation(destination, window.state?.currentParams || {});
+    window.executeAppNavigation(destination, destinationParams);
   } else if (typeof window.navigate === 'function') {
-    window.navigate(destination, window.state?.currentParams || {});
+    window.navigate(destination, destinationParams);
   }
 };
 
@@ -5679,7 +5712,7 @@ window.triggerOAuthFlow = async function (providerName) {
     email: email,
     provider: providerName,
     isGuest: false,
-    xp: existingRecord?.xp || 50
+    xp: Number.isFinite(Number(existingRecord?.xp)) ? Number(existingRecord.xp) : 0
   };
 
   saveUserRecord(userSession);
@@ -5702,7 +5735,7 @@ window.showWelcomeModal = function (user) {
   const modalContainer = document.getElementById('auth-modal-portal');
   if (!modalContainer) {
     saveUserRecord(user);
-    window.state.showFirstTimeBonusBanner = true;
+    window.state.showFirstTimeBonusBanner = false;
     window.navigate('home');
     return;
   }
@@ -5712,8 +5745,7 @@ window.completeRegistrationAndEnter = function () {
   if (window.state && window.state.user) {
     saveUserRecord(window.state.user);
   }
-  // Enable the first-time welcome bonus banner on dashboard arrival
-  window.state.showFirstTimeBonusBanner = true;
+  window.state.showFirstTimeBonusBanner = false;
 
   const modalContainer = document.getElementById('auth-modal-portal');
   if (modalContainer) modalContainer.innerHTML = '';
@@ -6106,7 +6138,7 @@ window.saveNewPassword = function (e, email) {
     userRecord = {
       name: cleanEmail.split('@')[0],
       email: cleanEmail,
-      xp: 50,
+      xp: 0,
       emailVerified: true
     };
   }
@@ -6418,6 +6450,7 @@ function handleSiteCardClick(siteId) {
     console.log('[SITE-TAP-COUNT]', JSON.stringify(window.__siteTapCounters));
   }
   if (!siteId) return;
+  if (typeof window.isProductionSite === 'function' && !window.isProductionSite(siteId)) return;
   if (typeof window.openSitePreview === 'function') {
     window.openSitePreview(siteId);
   } else {
@@ -6441,40 +6474,14 @@ function handleImpactAction(actionType, actionPayload = {}) {
       break;
 
     case 'sign-petition':
-      if (isGuest) {
-        showAuthRequiredModal({
-          title: "Sign the Petition",
-          message: "Sign in or register to add your verified signature to heritage conservation petitions.",
-          redirectView: "petition",
-          targetId: actionPayload.petitionId || 'ritigala-forest'
-        });
-        return;
-      }
       navigate('petition');
       break;
 
     case 'join-cleanup':
-      if (isGuest) {
-        showAuthRequiredModal({
-          title: "Join Volunteer Cleanup",
-          message: "Please sign in to register for upcoming site preservation and cleanup events.",
-          redirectView: "cleanup",
-          targetId: actionPayload.eventId || 'site-cleanup'
-        });
-        return;
-      }
       navigate('cleanup');
       break;
 
     case 'create-event':
-      if (isGuest) {
-        showAuthRequiredModal({
-          title: "Host a Community Event",
-          message: "You must be signed in to organize and publish new community heritage initiatives.",
-          redirectView: "create-event"
-        });
-        return;
-      }
       navigate('create-event');
       break;
 
@@ -6815,10 +6822,118 @@ function showLocationPermissionModal() {
 let yathraMapInstance = null;
 let userCoordinates = null;
 let locationPermissionDenied = false;
+window.VERIFICATION_RADIUS_METERS = 500;
+window.VERIFICATION_MAX_ACCURACY_METERS = 200;
+window.VERIFICATION_LOCATION_FRESH_MS = 60 * 1000;
+
+function isValidLocationCoordinatePair(position) {
+  if (!position) return false;
+  const latitude = Number(position.latitude);
+  const longitude = Number(position.longitude);
+  return Number.isFinite(latitude) && Number.isFinite(longitude) &&
+    latitude >= -90 && latitude <= 90 && longitude >= -180 && longitude <= 180;
+}
+
+window.refreshCurrentLocationForVerification = async function (siteId = window.state?.activeSite?.id, showFeedback = false) {
+  if (window.__verificationLocationRequest) return window.__verificationLocationRequest;
+
+  window.__verificationLocationRequest = (async () => {
+    let bestPosition = null;
+    const savePosition = (coords) => {
+      const nextPosition = {
+        latitude: Number(coords.latitude),
+        longitude: Number(coords.longitude),
+        accuracy: Number.isFinite(Number(coords.accuracy)) ? Number(coords.accuracy) : null,
+        capturedAt: Date.now()
+      };
+      if (!isValidLocationCoordinatePair(nextPosition)) {
+        throw new Error('The device returned an invalid location.');
+      }
+      if (!bestPosition || !Number.isFinite(bestPosition.accuracy) ||
+          (Number.isFinite(nextPosition.accuracy) && nextPosition.accuracy < bestPosition.accuracy)) {
+        bestPosition = nextPosition;
+      }
+      userCoordinates = nextPosition;
+      window.userCoordinates = nextPosition;
+      if (!window.state) window.state = {};
+      window.state.userCoordinates = nextPosition;
+      locationPermissionDenied = false;
+      return nextPosition;
+    };
+
+    if (showFeedback) {
+      window.showNotification?.('Getting your precise location. Please wait a moment.', 'info');
+    }
+
+    let lastError = null;
+    try {
+      let permission = await Geolocation.checkPermissions();
+      if (permission.location !== 'granted' && permission.coarseLocation !== 'granted') {
+        permission = await Geolocation.requestPermissions();
+      }
+      if (permission.location === 'granted' || permission.coarseLocation === 'granted') {
+        const position = await Geolocation.getCurrentPosition({
+          enableHighAccuracy: true,
+          timeout: 15000,
+          maximumAge: 0
+        });
+        savePosition(position.coords);
+      } else {
+        locationPermissionDenied = true;
+        throw new Error('Location permission was not granted.');
+      }
+    } catch (error) {
+      lastError = error;
+      console.warn('Native precise location unavailable:', error);
+    }
+
+    if ((!bestPosition || !Number.isFinite(bestPosition.accuracy) || bestPosition.accuracy > window.VERIFICATION_MAX_ACCURACY_METERS) && navigator.geolocation) {
+      try {
+        const browserPosition = await new Promise((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, {
+            enableHighAccuracy: true,
+            timeout: 15000,
+            maximumAge: 0
+          });
+        });
+        savePosition(browserPosition.coords);
+      } catch (error) {
+        lastError = error;
+        console.warn('Browser precise location unavailable:', error);
+      }
+    }
+
+    if (!isValidLocationCoordinatePair(bestPosition || userCoordinates)) {
+      locationPermissionDenied = true;
+      window.showNotification?.('Your current location could not be read. Turn on Location and Precise Location for Yathra Lanka, then tap Try Again.', 'error');
+      throw lastError || new Error('Current location unavailable.');
+    }
+
+    if (bestPosition && Number.isFinite(bestPosition.accuracy) && bestPosition.accuracy > window.VERIFICATION_MAX_ACCURACY_METERS) {
+      locationPermissionDenied = false;
+      throw new Error(`Location accuracy is only about ${Math.round(bestPosition.accuracy)} metres. Move to an open area and try again.`);
+    }
+
+    if (showFeedback) {
+      const accuracyText = Number.isFinite(userCoordinates.accuracy)
+        ? ` Accuracy is about ${Math.round(userCoordinates.accuracy)} metres.`
+        : '';
+      window.showNotification?.(`Location updated.${accuracyText}`, 'success');
+    }
+
+    return userCoordinates;
+  })();
+
+  try {
+    return await window.__verificationLocationRequest;
+  } finally {
+    window.__verificationLocationRequest = null;
+  }
+};
 
 // --- MAP INITIALIZATION & LEAFLET FALLBACK ENGINE ---
 function renderMapMarkers(map, type = 'google') {
-  const mapSites = sitesData.filter(site => site.latitude && site.longitude);
+  const mapSites = sitesData.filter(site => window.isProductionSite(site.id) && site.latitude && site.longitude);
 
   if (type === 'leaflet' && typeof L !== 'undefined') {
     mapSites.forEach(site => {
@@ -7258,7 +7373,6 @@ function renderLogin() {
   if (!window.state) window.state = {};
   window.state.authTab = 'signin';
   window.state.authActiveTab = 'signin';
-  window.state.authOrigin = null;
   return renderAuthCard('signin');
 }
 
@@ -7266,7 +7380,6 @@ function renderSignUp() {
   if (!window.state) window.state = {};
   window.state.authTab = 'signup';
   window.state.authActiveTab = 'signup';
-  window.state.authOrigin = null;
   return renderAuthCard('signup');
 }
 
@@ -7474,7 +7587,7 @@ window.renderDashboard = function renderDashboard() {
       user = window.state?.user ||
         parsedCurrentUser ||
         parsedActiveUser ||
-        { name: "Explorer", xp: 50, dashboard_visits: 2 };
+        { name: "Explorer", xp: 0, dashboard_visits: 2 };
     }
 
     const displayName = session.displayName;
@@ -7493,7 +7606,7 @@ window.renderDashboard = function renderDashboard() {
       ? `${currentXP} XP (Max)`
       : `${currentXP} / ${rankInfo.nextRankXP ? rankInfo.nextRankXP.toLocaleString() : 1000} XP`;
 
-    const showFirstTimeBanner = !isGuest && user?.welcomeBannerSeen === false;
+    const showFirstTimeBanner = false;
     console.log(`[WELCOME-BANNER] visible=${showFirstTimeBanner} reason=${isGuest ? 'guest' : (user?.welcomeBannerSeen ? 'already_seen' : 'new_canonical_user')}`);
 
     if (showFirstTimeBanner && user) {
@@ -7555,14 +7668,14 @@ window.renderDashboard = function renderDashboard() {
             </div>
           ` : ''}
 
-          <!-- FIRST-VISIT +50 XP REWARD BOX (Between Welcome and Wanderer) -->
+          <!-- Legacy first-visit container is disabled. Registration awards no XP. -->
           ${showFirstTimeBanner ? `
             <div id="first-visit-xp-box" style="background: #FEF3C7; border: 1.5px solid #F59E0B; border-radius: 16px; padding: 14px 16px; margin-bottom: 14px; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 4px 12px rgba(245, 158, 11, 0.2);">
               <div style="display: flex; align-items: center; gap: 12px;">
                 <span style="font-size: 24px;">🎁</span>
                 <div>
-                  <div style="font-size: 13.5px; font-weight: 800; color: #92400E;">+50 Experience Points Awarded!</div>
-                  <div style="font-size: 11px; font-weight: 600; color: #78350F;">Welcome to your first expedition.</div>
+                  <div style="font-size: 13.5px; font-weight: 800; color: #92400E;">Explorer account ready</div>
+                  <div style="font-size: 11px; font-weight: 600; color: #78350F;">Complete verified heritage activities to earn XP.</div>
                 </div>
               </div>
               <button onclick="document.getElementById('first-visit-xp-box').remove()" style="background: none; border: none; font-size: 16px; color: #92400E; cursor: pointer; font-weight: 800; padding: 0 4px;">✕</button>
@@ -7593,10 +7706,10 @@ window.renderDashboard = function renderDashboard() {
             <h3 style="margin: 0 0 4px 0; font-size: 15.5px; font-weight: 800; color: #FFFFFF;">Searcher</h3>
             <p style="margin: 0 0 14px 0; font-size: 12px; color: rgba(255,255,255,0.8);">Find specific locations through our categorized directory.</p>
             <div style="display: flex; gap: 8px; margin-bottom: 12px;">
-              <button type="button" onclick="window.handleDashboardInteraction('directory')" style="flex: 1; background: rgba(255,255,255,0.14); border: 1px solid rgba(255,255,255,0.22); color: #FFFFFF; padding: 8px 10px; border-radius: 10px; font-size: 12px; font-weight: 700; cursor: pointer;">Heritage Trail</button>
-              <button type="button" onclick="window.handleDashboardInteraction('directory')" style="flex: 1; background: rgba(255,255,255,0.14); border: 1px solid rgba(255,255,255,0.22); color: #FFFFFF; padding: 8px 10px; border-radius: 10px; font-size: 12px; font-weight: 700; cursor: pointer;">Hidden Gems</button>
+              <button type="button" onclick="window.handleDashboardInteraction('directory', { category: 'Heritage Trail' })" style="flex: 1; background: rgba(255,255,255,0.14); border: 1px solid rgba(255,255,255,0.22); color: #FFFFFF; padding: 8px 10px; border-radius: 10px; font-size: 12px; font-weight: 700; cursor: pointer;">Heritage Trail</button>
+              <button type="button" onclick="window.handleDashboardInteraction('directory', { category: 'Hidden Gems' })" style="flex: 1; background: rgba(255,255,255,0.14); border: 1px solid rgba(255,255,255,0.22); color: #FFFFFF; padding: 8px 10px; border-radius: 10px; font-size: 12px; font-weight: 700; cursor: pointer;">Hidden Gems</button>
             </div>
-            <button type="button" onclick="window.handleDashboardInteraction('directory')" style="width: 100%; background: #F5A623; color: #1E293B; border: none; border-radius: 12px; padding: 12px; font-size: 13.5px; font-weight: 800; cursor: pointer; box-shadow: 0 4px 10px rgba(245, 166, 35, 0.25);">
+            <button type="button" onclick="window.handleDashboardInteraction('directory', { category: 'Heritage Trail' })" style="width: 100%; background: #F5A623; color: #1E293B; border: none; border-radius: 12px; padding: 12px; font-size: 13.5px; font-weight: 800; cursor: pointer; box-shadow: 0 4px 10px rgba(245, 166, 35, 0.25);">
               View directory
             </button>
           </div>
@@ -7685,6 +7798,16 @@ function resolveSiteImage(keywords = []) {
 // ============================================================================
 // DIRECTORY DATASET (STRICT DUAL-TAB SEGREGATION)
 // ============================================================================
+const PRODUCTION_SITE_IDS = new Set([
+  'bmich', 'independence_memorial_hall', 'colombo_museum', 'galle_fort',
+  'sigiriya', 'temple_of_the_tooth', 'ruwanweliseya', 'mihintale',
+  'dambulla_cave', 'ritigala', 'dowa_temple', 'yudaganawa',
+  'pilikuttuwa', 'maligawila', 'buduruwagala'
+]);
+window.isProductionSite = function (siteId) {
+  return PRODUCTION_SITE_IDS.has(String(siteId || '').trim());
+};
+
 function getDirectoryDataset() {
   return [
     // --- HERITAGE TRAIL ---
@@ -7813,7 +7936,7 @@ function getDirectoryDataset() {
       xp: 50,
       image: '/Element%20Pictures/Buduruwagala%20Temple.jpg'
     }
-  ];
+  ].filter(site => window.isProductionSite(site.id));
 }
 
 // Global Category Switcher
@@ -7847,6 +7970,7 @@ window.handleDirectorySearch = function (event) {
 // ============================================================================
 window.openSitePreview = function (siteId) {
   if (!window.state) window.state = {};
+  if (!window.isProductionSite(siteId)) return;
   if (
     typeof window.canOpenLandmarkDuringActiveSession === 'function' &&
     !window.canOpenLandmarkDuringActiveSession(siteId, true)
@@ -8048,17 +8172,17 @@ function renderDirectoryScreen(params = {}) {
         </div>
 
         <div style="display: flex; background: rgba(0, 0, 0, 0.08); padding: 4px; border-radius: 14px; width: 100%; box-sizing: border-box;">
-          <button 
+          <button
             id="dir-tab-heritage"
-            type="button" 
-            onclick="window.switchDirectoryCategory('Heritage Trail')" 
+            type="button"
+            onclick="window.switchDirectoryCategory('Heritage Trail')"
             style="flex: 1; padding: 9px 0; border: none; border-radius: 11px; font-size: 13px; font-weight: 800; cursor: pointer; transition: all 0.2s ease; ${isHeritage ? 'background: #FFFFFF; color: #0B5A68; box-shadow: 0 2px 8px rgba(0,0,0,0.12);' : 'background: transparent; color: #64748B;'}">
             Heritage Trail
           </button>
-          <button 
+          <button
             id="dir-tab-hidden"
-            type="button" 
-            onclick="window.switchDirectoryCategory('Hidden Gems')" 
+            type="button"
+            onclick="window.switchDirectoryCategory('Hidden Gems')"
             style="flex: 1; padding: 9px 0; border: none; border-radius: 11px; font-size: 13px; font-weight: 800; cursor: pointer; transition: all 0.2s ease; ${!isHeritage ? 'background: #FFFFFF; color: #0B5A68; box-shadow: 0 2px 8px rgba(0,0,0,0.12);' : 'background: transparent; color: #64748B;'}">
             Hidden Gems
           </button>
@@ -8066,7 +8190,7 @@ function renderDirectoryScreen(params = {}) {
 
       </div>
 
-      <div style="flex: 1; overflow-y: auto; padding: 8px 16px 85px 16px; box-sizing: border-box;">
+      <div class="yl-directory-scroll" style="flex: 1; overflow-y: auto; padding: 8px 16px 0 16px; box-sizing: border-box;">
         <div id="directory-grid-container" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px;">
         </div>
       </div>
@@ -8184,8 +8308,9 @@ window.attachMapEvents = function () {
   }
 };
 
-window.getQuizLockStatus = function () {
-  const lockUntil = parseInt(localStorage.getItem('yathra_quiz_locked_until') || '0', 10);
+window.getQuizLockStatus = function (siteId = window.state?.activeSite?.id) {
+  const cleanId = String(siteId || 'unknown').toLowerCase().trim();
+  const lockUntil = parseInt(localStorage.getItem(`yathra_quiz_locked_until_${cleanId}`) || '0', 10);
   const now = Date.now();
   if (lockUntil > now) {
     const remainingMinutes = Math.ceil((lockUntil - now) / (60 * 1000));
@@ -8195,31 +8320,57 @@ window.getQuizLockStatus = function () {
 };
 
 window.recordQuizResult = function (siteId, scorePercent) {
-  let attempts = parseInt(localStorage.getItem(`yathra_quiz_attempts_${siteId}`) || '0', 10) + 1;
-  localStorage.setItem(`yathra_quiz_attempts_${siteId}`, String(attempts));
+  const cleanId = String(siteId || 'unknown').toLowerCase().trim();
+  let attempts = parseInt(localStorage.getItem(`yathra_quiz_attempts_${cleanId}`) || '0', 10) + 1;
+  localStorage.setItem(`yathra_quiz_attempts_${cleanId}`, String(attempts));
 
-  // If 100% correct OR 3 failed attempts, trigger the 30-minute lock for all quizzes
+  // A perfect score or three attempts pauses only this landmark's quiz.
   if (scorePercent === 100 || attempts >= 3) {
     const lockDurationMs = 30 * 60 * 1000;
-    localStorage.setItem('yathra_quiz_locked_until', String(Date.now() + lockDurationMs));
-    localStorage.removeItem(`yathra_quiz_attempts_${siteId}`); // reset attempts
+    localStorage.setItem(`yathra_quiz_locked_until_${cleanId}`, String(Date.now() + lockDurationMs));
+    localStorage.removeItem(`yathra_quiz_attempts_${cleanId}`);
     return { attemptsUsed: attempts, attemptsRemaining: 0, isLocked: true };
   }
   return { attemptsUsed: attempts, attemptsRemaining: Math.max(0, 3 - attempts), isLocked: false };
 };
 
 window.handleQuizButtonClick = function (siteId) {
-  const lock = window.getQuizLockStatus();
+  const lock = window.getQuizLockStatus(siteId);
   if (lock && lock.isLocked) {
     if (typeof window.showNotification === 'function') {
-      window.showNotification(`⏳ Quizzes temporarily locked across all sites. Available in ${lock.remainingMinutes} min.`, 'info');
+      window.showNotification(`This landmark quiz is temporarily locked. Available in ${lock.remainingMinutes} min.`, 'info');
     } else {
-      alert(`⏳ Quizzes temporarily locked across all sites. Available in ${lock.remainingMinutes} min.`);
+      alert(`This landmark quiz is temporarily locked. Available in ${lock.remainingMinutes} min.`);
     }
     return;
   }
 
-  window.initSiteQuizSession(siteId);
+  window.showQuizIntroduction(siteId);
+};
+
+window.showQuizIntroduction = function (siteId) {
+  document.getElementById('quiz-introduction-overlay')?.remove();
+  const pool = window.sitesData || (typeof sitesData !== 'undefined' ? sitesData : []);
+  const site = pool.find(item => item.id === siteId) || window.state?.activeSite;
+  const overlay = document.createElement('div');
+  overlay.id = 'quiz-introduction-overlay';
+  overlay.className = 'quiz-introduction-overlay';
+  overlay.innerHTML = `
+    <div class="quiz-introduction-card" role="dialog" aria-modal="true">
+      <div class="quiz-introduction-icon">?</div>
+      <h3>${site?.name || 'Landmark'} Knowledge Quiz</h3>
+      <p>You will receive 5 questions selected only from this landmark's question bank.</p>
+      <ul>
+        <li>30 seconds are allowed for each question.</li>
+        <li>You may change an answer before selecting Next.</li>
+        <li>A perfect score earns 50 XP.</li>
+        <li>After a perfect score or three attempts, only this landmark's quiz pauses for 30 minutes.</li>
+      </ul>
+      <button class="is-primary" onclick="document.getElementById('quiz-introduction-overlay')?.remove(); window.initSiteQuizSession('${siteId}')">Begin Quiz</button>
+      <button onclick="document.getElementById('quiz-introduction-overlay')?.remove()">Not Now</button>
+    </div>
+  `;
+  document.body.appendChild(overlay);
 };
 
 window.launchInAppCamera = function (cpId) {
@@ -8253,7 +8404,7 @@ window.startSiteVerificationFlow = function (siteId) {
 
       const distanceKm = window.calculateDistanceKm(userLat, userLng, coords.lat, coords.lng);
 
-      if (distanceKm <= 0.5 || distanceKm === 0 || isNaN(distanceKm)) {
+      if (Number.isFinite(distanceKm) && distanceKm <= 0.5) {
         // Inside the 500 m landmark perimeter:
         // NEVER show distance warning modal.
         // Admit the visitor and start the one-time 15-minute presence session.
@@ -8417,7 +8568,7 @@ window.openLiveGhostCamera = function (siteId, optionNum, refImageSrc) {
     <!-- Bottom Shutter Action -->
     <div style="position: relative; z-index: 10; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 8px;">
       <p style="color: #FFFFFF; font-size: 12px; font-weight: 700; margin: 0; text-shadow: 0 2px 6px rgba(0,0,0,0.9);">
-        Tap shutter button to capture & analyze match confidence
+        Align the landmark with the guide, then capture the frame
       </p>
       
       <!-- Physical Round Shutter Button -->
@@ -8502,22 +8653,18 @@ window.openLiveGhostCamera = function (siteId, optionNum, refImageSrc) {
       liveVideo.srcObject.getTracks().forEach(track => track.stop());
     }
 
-    // Compute random high confidence match (88% - 94%)
-    const matchConfidence = 88 + Math.floor(Math.random() * 7);
-
-    // Award +70 XP
+    // The image is not scored. GPS eligibility is established before this guided capture.
     window.awardLandmarkXP(site.id, 'PHOTO');
 
     // Remove camera screen
     cameraScreen.remove();
 
-    // Show Match Confidence Success Modal
-    window.showMatchConfidenceModal(site, matchConfidence);
+    window.showMatchConfidenceModal(site);
   };
 };
 
 // Match Confidence Verified Success Modal
-window.showMatchConfidenceModal = function (site, confidencePercent) {
+window.showMatchConfidenceModal = function (site) {
   const oldModal = document.getElementById('match-confidence-modal');
   if (oldModal) oldModal.remove();
 
@@ -8535,12 +8682,8 @@ window.showMatchConfidenceModal = function (site, confidencePercent) {
         ✓
       </div>
       
-      <div style="display: inline-block; background: #FEF3C7; color: #D97706; font-size: 11px; font-weight: 800; padding: 4px 12px; border-radius: 12px; margin-bottom: 6px;">
-        VISION SCORE: ${confidencePercent}% MATCH
-      </div>
-
       <h3 style="font-size: 18px; color: #125463; margin: 4px 0 6px 0; font-weight: 800;">
-        Match Confidence Verified!
+        Guided Photo Captured
       </h3>
       
       <div style="font-size: 15px; font-weight: 900; color: #10B981; margin-bottom: 12px;">
@@ -8548,7 +8691,7 @@ window.showMatchConfidenceModal = function (site, confidencePercent) {
       </div>
 
       <p style="font-size: 12.5px; color: #475569; line-height: 1.5; margin: 0 0 20px 0;">
-        Architectural geometry for <strong>${site ? site.name : 'Independence Memorial Hall'}</strong> matches the reference specimen.
+        Your on-site photo for <strong>${site ? site.name : 'Independence Memorial Hall'}</strong> was captured after location verification.
       </p>
 
       <button onclick="document.getElementById('match-confidence-modal').remove(); window.navigate('site-detail', { id: '${site ? site.id : 'independence_memorial_hall'}' });" style="width: 100%; background: #0C6C7A; color: #FFFFFF; border: none; border-radius: 12px; padding: 13px; font-weight: 800; font-size: 14px; cursor: pointer; box-shadow: 0 4px 14px rgba(12,108,122,0.3);">
@@ -8566,56 +8709,7 @@ window.showMatchConfidenceModal = function (site, confidencePercent) {
   chassis.appendChild(modal);
 };
 
-window.switchSiteDetailTab = async function (tab) {
-  if (!window.state) window.state = {};
-  if (tab === 'verification') {
-    const site = window.state.activeSite;
-    let currentPosition = window.userCoordinates || window.state?.userCoordinates || userCoordinates;
-
-    if (navigator.geolocation) {
-      try {
-        const freshPosition = await new Promise((resolve, reject) => {
-          navigator.geolocation.getCurrentPosition(resolve, reject, {
-            enableHighAccuracy: true,
-            timeout: 12000,
-            maximumAge: 0
-          });
-        });
-        currentPosition = {
-          latitude: freshPosition.coords.latitude,
-          longitude: freshPosition.coords.longitude,
-          accuracy: freshPosition.coords.accuracy
-        };
-        userCoordinates = currentPosition;
-        window.userCoordinates = currentPosition;
-        window.state.userCoordinates = currentPosition;
-      } catch (error) {
-        console.warn('Fresh verification GPS fix unavailable:', error);
-      }
-    }
-
-    const userLat = Number(currentPosition?.latitude);
-    const userLng = Number(currentPosition?.longitude);
-    const resolvedSite = window.resolveSiteCoordinates?.(site) || {};
-    const siteLat = Number(resolvedSite.lat ?? site?.latitude ?? site?.lat);
-    const siteLng = Number(resolvedSite.lng ?? site?.longitude ?? site?.lng);
-
-    if (![userLat, userLng, siteLat, siteLng].every(Number.isFinite)) {
-      window.showNotification?.('Waiting for a precise GPS location. Keep Location enabled and try Verification again.', 'info');
-      return;
-    }
-    const distance = typeof calculateHaversineDistanceMeters === 'function'
-      ? calculateHaversineDistanceMeters(userLat, userLng, siteLat, siteLng)
-      : 0;
-    const locked = distance > 500;
-    if (locked) {
-      window.state.siteDetailTab = 'overview';
-      window.showProximityGateModal(site, distance);
-      return;
-    }
-  }
-  window.state.siteDetailTab = tab;
-
+window.applySiteDetailTabUI = function (tab) {
   const panelOverview = document.getElementById('site-tab-panel-overview');
   const panelVerification = document.getElementById('site-tab-panel-verification');
   const btnOverview = document.getElementById('site-tab-btn-overview');
@@ -8652,6 +8746,107 @@ window.switchSiteDetailTab = async function (tab) {
       btnVerification.style.boxShadow = 'none';
     }
   }
+};
+
+window.switchSiteDetailTab = async function (tab) {
+  if (!window.state) window.state = {};
+  if (tab !== 'verification') {
+    window.state.siteDetailTab = tab;
+    window.applySiteDetailTabUI(tab);
+    return;
+  }
+
+  if (window.__verificationGateInProgress) {
+    window.showVerificationLocationCheckingModal?.(window.state.activeSite);
+    return;
+  }
+
+  const site = window.state.activeSite;
+  if (!site?.id) return;
+  window.__verificationGateInProgress = true;
+  window.showVerificationLocationCheckingModal?.(site);
+  let currentPosition = null;
+  try {
+    currentPosition = await window.refreshCurrentLocationForVerification(site?.id, false);
+  } catch (error) {
+    console.warn('Fresh verification GPS fix unavailable:', error);
+    window.showVerificationLocationUnavailableModal?.(site, error?.message);
+    window.__verificationGateInProgress = false;
+    return;
+  }
+
+  const userLat = Number(currentPosition?.latitude);
+  const userLng = Number(currentPosition?.longitude);
+  const resolvedSite = window.resolveSiteCoordinates?.(site) || {};
+  const siteLat = Number(resolvedSite.lat ?? site?.latitude ?? site?.lat);
+  const siteLng = Number(resolvedSite.lng ?? site?.longitude ?? site?.lng);
+
+  if (![userLat, userLng, siteLat, siteLng].every(Number.isFinite)) {
+    window.showVerificationLocationUnavailableModal?.(site);
+    window.__verificationGateInProgress = false;
+    return;
+  }
+
+  const distance = typeof calculateHaversineDistanceMeters === 'function'
+    ? calculateHaversineDistanceMeters(userLat, userLng, siteLat, siteLng)
+    : Number.POSITIVE_INFINITY;
+  if (!Number.isFinite(distance)) {
+    window.showVerificationLocationUnavailableModal?.(site);
+  } else if (distance > window.VERIFICATION_RADIUS_METERS) {
+    window.showProximityGateModal(site, distance);
+  } else {
+    const overlay = document.getElementById('proximity-gate-modal-overlay');
+    const card = overlay?.querySelector('.verification-location-card');
+    if (card) {
+      card.innerHTML = `<div class="verification-location-success">✓</div><h3>Within verification area</h3><p>You are within 500 metres of <strong>${site.name}</strong>. Opening verification and checkpoints.</p>`;
+    }
+    window.state.siteDetailTab = 'verification';
+    window.startActiveLandmarkSession?.(site);
+    setTimeout(() => {
+      document.getElementById('proximity-gate-modal-overlay')?.remove();
+      window.navigate('site-detail', { id: site.id, preserveTab: true, preserveOrigin: true });
+    }, 650);
+  }
+  window.__verificationGateInProgress = false;
+};
+
+window.retryVerificationLocationCheck = function (siteId) {
+  const currentId = siteId || window.state?.activeSite?.id;
+  if (currentId && String(window.state?.activeSite?.id) !== String(currentId)) {
+    window.navigate('site-detail', { id: currentId, preserveOrigin: true });
+  }
+  window.__verificationGateInProgress = false;
+  window.switchSiteDetailTab('verification');
+};
+
+window.requireFreshVerificationAccess = async function (siteId) {
+  const pool = window.sitesData || (typeof sitesData !== 'undefined' ? sitesData : []);
+  const site = pool.find(item => String(item.id).toLowerCase() === String(siteId).toLowerCase()) || window.state?.activeSite;
+  if (!site) return false;
+  let position = window.userCoordinates || window.state?.userCoordinates || userCoordinates;
+  const age = Date.now() - Number(position?.capturedAt || 0);
+  const accurate = Number.isFinite(Number(position?.accuracy)) && Number(position.accuracy) <= window.VERIFICATION_MAX_ACCURACY_METERS;
+  if (!isValidLocationCoordinatePair(position) || age > window.VERIFICATION_LOCATION_FRESH_MS || !accurate) {
+    window.showVerificationLocationCheckingModal?.(site);
+    try {
+      position = await window.refreshCurrentLocationForVerification(site.id, false);
+    } catch (error) {
+      window.showVerificationLocationUnavailableModal?.(site, error?.message);
+      return false;
+    }
+  }
+  const coords = window.resolveSiteCoordinates?.(site) || { lat: site.latitude, lng: site.longitude };
+  const distance = calculateHaversineDistanceMeters(Number(position.latitude), Number(position.longitude), Number(coords.lat), Number(coords.lng));
+  if (!Number.isFinite(distance)) {
+    window.showVerificationLocationUnavailableModal?.(site);
+    return false;
+  }
+  if (distance > window.VERIFICATION_RADIUS_METERS) {
+    window.showProximityGateModal(site, distance);
+    return false;
+  }
+  document.getElementById('proximity-gate-modal-overlay')?.remove();
+  return true;
 };
 
 window.initBackgroundImmersionTimer = function (siteId) {
@@ -8760,17 +8955,22 @@ function renderSiteDetail(site = window.state?.activeSite) {
     const achievement = window.getLandmarkAchievementStatus(site.id);
     const locationVerified = achievement.locationVerified;
     const photoVerified = achievement.photoVerified;
+    const visitDurationMinutes = Math.round((window.getLandmarkSessionDurationMs?.(site.id) || (15 * 60 * 1000)) / 60000);
 
     stage = 'distance-calc';
     console.log('[SITE-RUNTIME 04] distance-calc-start');
-    const userLat = (window.userCoordinates && window.userCoordinates.latitude) ? window.userCoordinates.latitude : (window.state?.userCoordinates?.latitude || 6.9271);
-    const userLng = (window.userCoordinates && window.userCoordinates.longitude) ? window.userCoordinates.longitude : (window.state?.userCoordinates?.longitude || 79.8612);
-    const siteLat = site.latitude || 6.9271;
-    const siteLng = site.longitude || 79.8612;
-    const distMeters = typeof calculateHaversineDistanceMeters === 'function' ? calculateHaversineDistanceMeters(userLat, userLng, siteLat, siteLng) : 0;
+    const currentPosition = window.userCoordinates || window.state?.userCoordinates;
+    const userLat = isValidLocationCoordinatePair(currentPosition) ? Number(currentPosition.latitude) : Number.NaN;
+    const userLng = isValidLocationCoordinatePair(currentPosition) ? Number(currentPosition.longitude) : Number.NaN;
+    const siteLat = Number(site.latitude);
+    const siteLng = Number(site.longitude);
+    const hasLocation = [userLat, userLng, siteLat, siteLng].every(Number.isFinite);
+    const distMeters = hasLocation && typeof calculateHaversineDistanceMeters === 'function'
+      ? calculateHaversineDistanceMeters(userLat, userLng, siteLat, siteLng)
+      : Number.POSITIVE_INFINITY;
     console.log('[SITE-RUNTIME 05] distance-calc-complete distMeters=', distMeters);
 
-    const isProximityLocked = distMeters > 500;
+    const isProximityLocked = !hasLocation || distMeters > 500;
 
     if (!isProximityLocked) {
       window.state.siteLocationVerified = site.id;
@@ -8778,17 +8978,20 @@ function renderSiteDetail(site = window.state?.activeSite) {
 
     stage = 'quiz-status';
     console.log('[SITE-RUNTIME 06] quiz-lock-check-start');
-    const quizLock = (typeof window.getQuizLockStatus === 'function') ? window.getQuizLockStatus() : { isLocked: false, remainingMinutes: 0 };
+    const quizLock = (typeof window.getQuizLockStatus === 'function') ? window.getQuizLockStatus(site.id) : { isLocked: false, remainingMinutes: 0 };
     console.log('[SITE-RUNTIME 07] quiz-lock-check-complete locked=', quizLock.isLocked);
 
+    const multiOptionSites = new Set(['independence_memorial_hall', 'colombo_museum', 'bmich', 'galle_fort']);
     const verificationOptions = Array.isArray(site.verificationOptions) && site.verificationOptions.length
-      ? site.verificationOptions
-      : [1, 2, 3].map(number => ({ number }));
+      ? site.verificationOptions.slice(0, multiOptionSites.has(site.id) ? site.verificationOptions.length : 1)
+      : [{ number: 1 }];
     const optionResults = achievement.photoOptionResults || {};
     const verificationOptionButtons = verificationOptions.map(option => {
       const optionNumber = Number(option.number) || 1;
       const previousResult = optionResults[optionNumber];
-      const action = isProximityLocked
+      const action = !hasLocation
+        ? `window.refreshCurrentLocationForVerification('${site.id}', true).catch(() => {})`
+        : isProximityLocked
         ? `window.showProximityGateModal(window.state.activeSite, ${distMeters})`
         : `window.openTargetFramingView('${site.id}', ${optionNumber})`;
       return `
@@ -8798,8 +9001,8 @@ function renderSiteDetail(site = window.state?.activeSite) {
           aria-disabled="${isProximityLocked}"
           onclick="${action}"
           style="width: 100%; background: ${isProximityLocked ? '#94A3B8' : '#0B5A68'}; color: #FFFFFF; border: none; padding: 14px 18px; border-radius: 12px; font-weight: 800; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 8px; box-shadow: 0 2px 6px rgba(11,90,104,0.15); opacity: ${isProximityLocked ? '0.85' : '1'};">
-          <span style="display: inline-flex; align-items: center; text-align: left;">Image Option ${optionNumber} ${isProximityLocked ? '(Locked)' : ''}</span>
-          <span style="font-size: 12.5px; color: ${isProximityLocked ? '#FFF' : '#EBB34D'}; font-weight: 800; white-space: nowrap;">${isProximityLocked ? 'Proximity Required' : (previousResult ? `${previousResult.passed ? 'Verified' : 'Retry'} ${previousResult.score}%` : 'Frame & Match')}</span>
+          <span style="display: inline-flex; align-items: center; text-align: left;">Option ${optionNumber}: ${option.title || `Image Verification ${optionNumber}`} ${isProximityLocked ? '(Locked)' : ''}</span>
+          <span style="font-size: 12.5px; color: ${isProximityLocked ? '#FFF' : '#EBB34D'}; font-weight: 800; white-space: nowrap;">${isProximityLocked ? (hasLocation ? 'Visit Required' : 'Location Required') : (previousResult?.passed ? 'Completed' : 'Open Camera')}</span>
         </button>
       `;
     }).join('');
@@ -8841,7 +9044,7 @@ function renderSiteDetail(site = window.state?.activeSite) {
         </div>
 
         <!-- Content Panels Area -->
-        <div style="flex: 1; overflow-y: auto; padding: 14px 16px 24px 16px; box-sizing: border-box;">
+        <div class="yl-site-content-scroll" style="flex: 1; overflow-y: auto; padding: 14px 16px 24px 16px; box-sizing: border-box;">
 
           ${(locationVerified || photoVerified) ? `
             <div class="yl-site-achievement-banner ${locationVerified && photoVerified ? 'is-complete' : ''}">
@@ -8868,14 +9071,15 @@ function renderSiteDetail(site = window.state?.activeSite) {
               <img src="${site.image || '/assets/images/independence_hall.webp'}" alt="${siteName}" onerror="this.onerror=null; this.src='/assets/images/independence_hall.webp';">
             </div>
 
-            <!-- Historical Sanctuary Overview -->
-            <div style="background: #FFFFFF; border-radius: 16px; padding: 14px; margin-bottom: 12px; border: 1px solid #E2E8F0; box-shadow: 0 2px 8px rgba(0,0,0,0.03);">
-              <h3 style="font-size: 13px; font-weight: 800; color: #125463; margin: 0 0 6px 0;">Historical Sanctuary Overview</h3>
+            <!-- Landmark overview -->
+            <div class="yl-site-about-card" style="background: #FFFFFF; border-radius: 16px; padding: 14px; margin-bottom: 12px; border: 1px solid #E2E8F0; box-shadow: 0 2px 8px rgba(0,0,0,0.03);">
+              <h3 style="font-size: 13px; font-weight: 800; color: #125463; margin: 0 0 6px 0;">About This Landmark</h3>
               <p style="font-size: 12px; color: #475569; line-height: 1.5; margin: 0;">${siteDescription}</p>
             </div>
 
             <!-- Knowledge Quiz Button -->
             <button 
+              class="yl-site-quiz-button"
               onclick="window.handleQuizButtonClick('${site.id}')" 
               style="width: 100%; background: #FFFFFF; border: 1.5px solid ${quizLock.isLocked ? '#FCA5A5' : '#CBD5E1'}; border-radius: 14px; padding: 14px; display: flex; align-items: center; justify-content: space-between; cursor: pointer;">
               <div style="display: flex; align-items: center; gap: 10px;">
@@ -8895,7 +9099,8 @@ function renderSiteDetail(site = window.state?.activeSite) {
           <div id="site-tab-panel-verification" style="display: ${activeTab === 'verification' ? 'block' : 'none'};">
             <div style="margin-bottom: 12px;">
               <h3 style="font-size: 15px; font-weight: 800; color: #125463; margin: 0 0 4px 0;">Landmark Verification</h3>
-              <p style="font-size: 11.5px; color: #64748B; margin: 0;">Confirm your presence and complete a checkpoint photo to earn 70 XP.</p>
+              <p style="font-size: 11.5px; color: #64748B; margin: 0;">Confirm your presence, complete a checkpoint photo, and test your knowledge.</p>
+              <div class="yl-xp-breakdown"><span>Location 100 XP</span><span>Photo 70 XP</span><span>Quiz 50 XP</span><strong>Total 220 XP</strong></div>
               <span class="yl-badge" style="display:inline-flex; margin-top:8px; background:rgba(18,84,99,.1); color:#0B5A68;">${siteCategory}</span>
             </div>
 
@@ -8903,10 +9108,10 @@ function renderSiteDetail(site = window.state?.activeSite) {
             ${locationVerified ? `
               <div class="yl-verification-state yl-verification-state-complete" style="background: #ECFDF5; border: 1.5px solid #10B981; border-radius: 16px; padding: 14px; margin-bottom: 14px; box-shadow: 0 2px 10px rgba(16,185,129,0.08);">
                 <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 5px;">
-                  <span style="font-size: 13px; font-weight: 800; color: #047857;">✓ Location Permanently Verified</span>
+                  <span style="font-size: 13px; font-weight: 800; color: #047857;">✓ Location Visit Verified</span>
                   <span style="background: #0B5A68; color: #EBB34D; font-size: 10.5px; font-weight: 800; padding: 4px 8px; border-radius: 12px; white-space: nowrap;">Lifetime Visit</span>
                 </div>
-                <p style="font-size: 11.5px; color: #065F46; margin: 2px 0 0; line-height: 1.4;">Your completed 15-minute visit is saved. This timer will not start again.</p>
+                <p style="font-size: 11.5px; color: #065F46; margin: 2px 0 0; line-height: 1.4;">Your completed ${visitDurationMinutes}-minute visit is saved. This timer will not start again.</p>
                 ${isProximityLocked && !photoVerified ? '<p style="font-size: 10.5px; color: #92400E; margin: 7px 0 0;">Return within 500 m when you are ready to complete photo verification.</p>' : ''}
               </div>
             ` : isProximityLocked ? `
@@ -8916,22 +9121,29 @@ function renderSiteDetail(site = window.state?.activeSite) {
                   <span style="background: #FEF3C7; color: #92400E; font-size: 10.5px; font-weight: 800; padding: 4px 8px; border-radius: 12px; white-space: nowrap;">Required radius: 500 m</span>
                 </div>
                 <p style="font-size: 11.5px; color: #92400E; margin: 2px 0 0 0; line-height: 1.4; font-weight: 500;">
-                  You are <strong>${distMeters >= 1000 ? (distMeters / 1000).toFixed(1) + ' km' : Math.round(distMeters) + ' m'}</strong> away.<br>Move within 500 m to unlock photo verification.
+                  ${hasLocation
+                    ? `You are <strong>${distMeters >= 1000 ? (distMeters / 1000).toFixed(1) + ' km' : Math.round(distMeters) + ' m'}</strong> away.<br>Move within 500 m to unlock photo verification.`
+                    : 'We are acquiring your precise location. Keep Location enabled and remain on this screen.'}
                 </p>
+                ${!hasLocation ? `
+                  <button type="button" onclick="window.refreshCurrentLocationForVerification('${site.id}', true).catch(() => {})" style="width: 100%; margin-top: 10px; background: #0B5A68; color: #FFFFFF; border: none; border-radius: 10px; padding: 10px 12px; font-size: 12px; font-weight: 800; cursor: pointer;">
+                    Try Again
+                  </button>
+                ` : ''}
               </div>
             ` : `
               <div style="background: #ECFDF5; border: 1.5px solid #10B981; border-radius: 16px; padding: 14px; margin-bottom: 14px; box-shadow: 0 2px 10px rgba(16,185,129,0.08);">
                 <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
                   <span style="font-size: 13px; font-weight: 800; color: #047857; display: flex; align-items: center; gap: 6px;">
                     <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #10B981;"></span>
-                    Location Confirmed
+                    Within Site Boundary
                   </span>
                   <span style="background: #0B5A68; color: #EBB34D; font-size: 11px; font-weight: 800; padding: 4px 10px; border-radius: 12px;">
-                    On-Site Verified
+                    Visit in Progress
                   </span>
                 </div>
                 <p id="immersion-timer-status" style="font-size: 11.5px; color: #065F46; margin: 2px 0 0 0; line-height: 1.4; font-weight: 500;">
-                  Location confirmed. Your 15-minute on-site session is running; select any image option below.
+                  Location confirmed. Your ${visitDurationMinutes}-minute visit is running; select any image option below.
                 </p>
               </div>
             `}
@@ -9076,7 +9288,7 @@ function renderCamera() {
         <!-- Dynamic HUD Overlay (Strictly HIDDEN until stream is running) -->
         <div id="camera-hud-badge" class="camera-hud-badge" style="display: none;">
           <span class="hud-pulse-dot"></span>
-          <span id="hud-status-text">HUD Engine Active • Vision Scanning (94%)</span>
+          <span id="hud-status-text">Camera ready • Align the landmark guide</span>
         </div>
       </div>
 
@@ -9087,11 +9299,7 @@ function renderCamera() {
             <span class="shutter-inner-circle"></span>
           </button>
         </div>
-        <div class="camera-secondary-actions">
-          <button id="view-ledger-shortcut-btn" style="background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.3); color: #FFF; padding: 8px 14px; border-radius: 12px; font-size: 11px; font-weight: 800; cursor: pointer;">
-            🛡️ Ledger Verification
-          </button>
-        </div>
+        <p style="font-size: 11px; color: rgba(255,255,255,0.7); margin: 0; text-align: center;">The camera helps you frame the landmark. No image recognition score is calculated.</p>
       </div>
     </div>
   `;
@@ -9099,31 +9307,24 @@ function renderCamera() {
 
 function renderCameraSuccess() {
   const site = state.activeSite || sitesData[0];
-  const res = state.lastVerificationResult || { visionScore: 96, distanceDeltaMeters: 14, block: { signature: '0x4a8f9c1d2e3f4b5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f' } };
-  const signature = res.block ? res.block.signature : '0x4a8f9c1d2e3f4b5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f';
+  const res = state.lastVerificationResult || { status: 'PASSED', distanceDeltaMeters: 0 };
 
   return `
     <div class="screen dark-theme" style="padding-bottom: 30px; justify-content: center; align-items: center; padding: 24px;">
-      <h2 style="font-family: var(--font-title); font-size: 28px; color: var(--color-gold); text-align: center; margin-top: 10px;">Presence Synchronized</h2>
+      <h2 style="font-family: var(--font-title); font-size: 28px; color: var(--color-gold); text-align: center; margin-top: 10px;">Visit Verified</h2>
       
       <div class="camera-success-badge">
-        <div class="success-badge-text">${res.visionScore || 96}%<br><span style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;">Valid</span></div>
+        <div class="success-badge-text">✓<br><span style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;">On Site</span></div>
       </div>
       
-      <p style="font-size: 13px; color: #a9cbd0; font-weight: 700; margin-bottom: 2px;">Cryptographic State Ledger Block Synchronized</p>
+      <p style="font-size: 13px; color: #a9cbd0; font-weight: 700; margin-bottom: 2px;">Location and guided photo completed</p>
       
       <div style="font-size: 11px; color: var(--color-green-success); font-weight: 800; background: rgba(255,255,255,0.1); padding: 8px 14px; border-radius: 10px; text-align: center; max-width: 300px; line-height: 1.4; margin-bottom: 12px;">
-        ${state.verificationComment || 'Verification Successful: Real-time landmark features closely match reference structure model!'}
+        ${state.verificationComment || `You completed the on-site verification steps for ${site.name}.`}
       </div>
       
       <h3 style="font-size: 26px; font-weight: 900; color: var(--color-gold); margin-bottom: 16px;">+60 XP</h3>
 
-      <!-- Seal Signature Box -->
-      <div style="background: rgba(12, 108, 122, 0.2); border: 1px solid rgba(12, 108, 122, 0.6); border-radius: 10px; padding: 8px 12px; margin-bottom: 16px; width: 100%; max-width: 300px; text-align: center;">
-        <div style="font-size: 9px; color: #79B7C1; font-weight: 800; text-transform: uppercase;">Cryptographic Seal Hash</div>
-        <div style="font-family: monospace; font-size: 10px; color: #FFF; word-break: break-all; margin-top: 2px;">${signature}</div>
-      </div>
-      
       <div class="photo-compare-container">
         <div class="compare-card">
           <img src="${state.dwellImages.length > 0 ? state.dwellImages[0] : site.image}" alt="Captured">
@@ -9131,12 +9332,11 @@ function renderCameraSuccess() {
         </div>
         <div class="compare-card">
           <img src="${site.referenceImage || site.image}" alt="Reference">
-          <div class="compare-label">Reference Mapping</div>
+          <div class="compare-label">Framing Guide</div>
         </div>
       </div>
       
       <div style="display: flex; gap: 10px; width: 100%; max-width: 320px; margin-top: auto;">
-        <button class="btn-outline" style="flex: 1; border-color: var(--color-teal); color: var(--color-teal);" id="success-view-ledger">Inspect Ledger</button>
         <button class="btn-primary" style="flex: 1;" id="camera-success-continue">Continue</button>
       </div>
     </div>
@@ -9144,8 +9344,8 @@ function renderCameraSuccess() {
 }
 
 function renderCameraReject() {
-  const res = state.lastVerificationResult || { status: 'OUT_OF_BOUNDS', visionScore: 42, distanceDeltaMeters: 2640 };
-  const statusTitle = res.status === 'SPOOF_SUSPECTED' ? 'Security Anomaly Intercepted' : res.status === 'OUT_OF_BOUNDS' ? 'Geofence Out of Bounds' : 'Visual Inspection Failed';
+  const res = state.lastVerificationResult || { status: 'OUT_OF_BOUNDS', distanceDeltaMeters: 0 };
+  const statusTitle = res.status === 'OUT_OF_BOUNDS' ? 'Outside the Verification Area' : 'Verification Could Not Be Completed';
 
   return `
     <div class="screen" style="background: rgba(12, 24, 33, 0.95); color: white; padding: 24px; display: flex; flex-direction: column;">
@@ -9162,12 +9362,11 @@ function renderCameraReject() {
         <h3 style="font-size: 20px; font-weight: 900; margin-bottom: 10px; color: white;">${statusTitle}</h3>
         
         <div style="font-size: 11px; font-weight: 700; background: rgba(0,0,0,0.4); padding: 10px; border-radius: 10px; text-align: left; margin-bottom: 14px; line-height: 1.4; color: #FFF;">
-          ⚠️ ${state.verificationComment || 'Verification Failed: Geofence bounds or visual match metrics were not satisfied.'}
+          ⚠️ ${state.verificationComment || 'Location verification could not be completed. Check location access and try again at the landmark.'}
         </div>
         
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 11px; text-align: left; background: rgba(0,0,0,0.2); padding: 10px; border-radius: 10px;">
+        <div style="font-size: 11px; text-align: center; background: rgba(0,0,0,0.2); padding: 10px; border-radius: 10px;">
           <div><span style="color: #A9CBD0;">GPS Delta:</span> <strong>${res.distanceDeltaMeters || 0}m</strong></div>
-          <div><span style="color: #A9CBD0;">Vision Match:</span> <strong>${res.visionScore || 0}%</strong></div>
         </div>
       </div>
 
@@ -9354,10 +9553,38 @@ function renderOfflineSync() {
   `;
 }
 
+window.getSharedQuizQuestionBank = function () {
+  const pool = window.sitesData || (typeof sitesData !== 'undefined' ? sitesData : []);
+  const seen = new Set();
+  const bank = [];
+  pool.forEach(site => {
+    (Array.isArray(site?.quizzes) ? site.quizzes : []).forEach(question => {
+      const text = String(question?.question || '').trim();
+      const options = Array.isArray(question?.options) ? question.options : [];
+      const correctIndex = Number(question?.correctIndex);
+      const key = text.toLowerCase();
+      if (!text || seen.has(key) || options.length !== 4 || !Number.isInteger(correctIndex) || correctIndex < 0 || correctIndex >= options.length) return;
+      seen.add(key);
+      bank.push({ question: text, options: [...options], correctIndex });
+    });
+  });
+  return bank.slice(0, 50);
+};
+
 window.initSiteQuizSession = function (siteId) {
   const pool = window.sitesData || [];
   const site = pool.find(s => s.id === siteId) || window.state?.activeSite;
-  if (!site || !Array.isArray(site.quizzes) || site.quizzes.length === 0) {
+  const seen = new Set();
+  const siteBank = (Array.isArray(site?.quizzes) ? site.quizzes : []).filter(question => {
+    const text = String(question?.question || '').trim();
+    const options = Array.isArray(question?.options) ? question.options : [];
+    const correctIndex = Number(question?.correctIndex);
+    const key = text.toLowerCase();
+    if (!text || seen.has(key) || options.length !== 4 || !Number.isInteger(correctIndex) || correctIndex < 0 || correctIndex >= options.length) return false;
+    seen.add(key);
+    return true;
+  });
+  if (!site || siteBank.length < 5) {
     if (typeof window.showNotification === 'function') {
       window.showNotification("Knowledge Quiz for this location will be available soon.", "info");
     } else {
@@ -9366,19 +9593,19 @@ window.initSiteQuizSession = function (siteId) {
     return;
   }
 
-  // Check global 30-minute lock before starting
-  const lock = typeof window.getQuizLockStatus === 'function' ? window.getQuizLockStatus() : { isLocked: false };
+  // Check this landmark's 30-minute lock before starting.
+  const lock = typeof window.getQuizLockStatus === 'function' ? window.getQuizLockStatus(siteId) : { isLocked: false };
   if (lock.isLocked) {
     if (typeof window.showNotification === 'function') {
-      window.showNotification(`Quizzes locked across all sites. Available in ${lock.remainingMinutes} minutes.`, "info");
+      window.showNotification(`This landmark quiz is locked. Available in ${lock.remainingMinutes} minutes.`, "info");
     } else {
-      alert(`Quizzes locked across all sites. Available in ${lock.remainingMinutes} minutes.`);
+      alert(`This landmark quiz is locked. Available in ${lock.remainingMinutes} minutes.`);
     }
     return;
   }
 
-  // Sample 5 random questions from the question bank
-  const shuffledBank = [...site.quizzes].sort(() => 0.5 - Math.random());
+  // Sample five questions only from the selected landmark.
+  const shuffledBank = [...siteBank].sort(() => 0.5 - Math.random());
   const selectedFive = shuffledBank.slice(0, 5).map(q => {
     const indexedOptions = q.options.map((opt, i) => ({ text: opt, isCorrect: i === q.correctIndex }));
     const shuffledOptions = indexedOptions.sort(() => 0.5 - Math.random());
@@ -9920,23 +10147,45 @@ function renderActivismScreen() {
 }
 window.renderActivismScreen = renderActivismScreen;
 
+window.showFeaturePreviewNotice = function (featureName = 'This feature') {
+  const existing = document.getElementById('feature-preview-notice');
+  if (existing) existing.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'feature-preview-notice';
+  overlay.className = 'auth-modal-overlay';
+  overlay.innerHTML = `
+    <div class="auth-modal-card" role="dialog" aria-modal="true" aria-labelledby="feature-preview-title" style="max-width: 340px; text-align: center; padding: 24px;">
+      <div style="width: 48px; height: 48px; margin: 0 auto 12px; border-radius: 50%; background: rgba(12,108,122,0.10); color: #0B5A68; display: flex; align-items: center; justify-content: center; font-size: 24px;">ℹ</div>
+      <h3 id="feature-preview-title" style="font-size: 18px; font-weight: 900; color: #0B5A68; margin: 0 0 8px;">${featureName}</h3>
+      <p style="font-size: 13px; line-height: 1.55; color: #475569; margin: 0 0 18px;">This page is available for preview. The final action is not yet enabled because the required operational service has not been connected. No submission, payment, registration, or XP change has been made.</p>
+      <button type="button" class="btn-primary" id="feature-preview-close" style="width: 100%;">Return to Preview</button>
+    </div>
+  `;
+  const host = document.querySelector('.screen-viewport') || document.querySelector('.iphone-chassis') || document.getElementById('app') || document.body;
+  host.appendChild(overlay);
+  overlay.addEventListener('click', event => {
+    if (event.target === overlay) overlay.remove();
+  });
+  overlay.querySelector('#feature-preview-close')?.addEventListener('click', () => overlay.remove());
+};
+
 function renderActivismDashboard() {
   const isGuest = window.isGuestSession();
   const cards = [
-    { key: 'petition', title: 'Sign Petitions', desc: 'Support verified Sri Lankan heritage and conservation causes.', xp: '20 XP', image: 'Element Pictures/Ritigala Forest Petition.jpg', gated: true },
-    { key: 'donations', title: 'Donations', desc: 'Choose heritage restoration or support for the YathraLanka team.', xp: '52–500 XP', image: 'Element Pictures/Donations Stupa.jpg', gated: false },
-    { key: 'cleanup', title: 'Join Cleanups', desc: 'Take part in organized environmental and heritage-site cleanups.', xp: '100 XP', image: 'Element Pictures/Site Cleanup.jpg', gated: true },
-    { key: 'create-event', title: 'Create Community Event', desc: 'Organize a local initiative and bring volunteers together.', xp: '200 XP', image: 'Element Pictures/Pottery Village.jpg', gated: true }
+    { key: 'petition', title: 'Sign Petitions', desc: 'Review heritage and conservation campaigns.', image: 'Element Pictures/Ritigala Forest Petition.jpg', gated: true },
+    { key: 'donations', title: 'Donations', desc: 'Review heritage restoration support information.', image: 'Element Pictures/Donations Stupa.jpg', gated: false },
+    { key: 'cleanup', title: 'Join Cleanups', desc: 'Review organized environmental and heritage-site cleanups.', image: 'Element Pictures/Site Cleanup.jpg', gated: true },
+    { key: 'create-event', title: 'Create Community Event', desc: 'Preview the community event submission process.', image: 'Element Pictures/Pottery Village.jpg', gated: true }
   ];
   return `
     <div class="screen activism-screen activism-container impact-container" id="activism-view" style="padding-bottom: 80px;">
       <div class="activism-top-header" style="padding: 20px 20px 6px 20px;">
         <h2 style="font-size: 26px; font-weight: 900; display: flex; align-items: center; justify-content: space-between;">Make an Impact ${window.getGuestModeBadge()}</h2>
-        <p style="font-size: 12px; color: var(--color-gray); margin-top: 4px;">Small actions : Big change</p>
+        <p style="font-size: 12px; color: var(--color-gray); margin-top: 4px;">Support heritage through clear, verified activities.</p>
       </div>
       <div style="display: flex; flex-direction: column; gap: 14px; padding: 10px 16px;">
         ${cards.map(c => `
-          <button type="button" class="activism-card-link yl-impact-card" id="act-link-${c.key}">
+          <button type="button" class="activism-card-link yl-impact-card" id="act-link-${c.key}" aria-label="${c.title}">
             <img src="${c.image}" alt="" class="yl-impact-card-image">
             <div class="yl-impact-card-copy">
               <div style="display: flex; align-items: center; gap: 6px;">
@@ -9944,8 +10193,7 @@ function renderActivismDashboard() {
               </div>
               <p style="font-size: 11px; opacity: 0.8; margin-top: 2px;">${c.desc}</p>
               <div class="yl-impact-card-meta">
-                <span>${c.xp}</span>
-                ${isGuest && c.gated ? `<span class="yl-impact-guest-label">Sign In Required</span>` : `<span class="yl-impact-open-label">Available</span>`}
+                ${isGuest && c.gated ? '<span class="yl-impact-guest-label">Sign In to Continue</span>' : '<span class="yl-impact-open-label">View Details</span>'}
               </div>
             </div>
           </button>
@@ -9983,8 +10231,8 @@ function renderPetitionPage() {
           </div>
           <p style="font-size: 10px; color: var(--color-gray); text-align: center; font-weight: 600;">Earn 20 XP for signing</p>
         </div>
-        <button class="btn-primary" style="background: ${signed ? 'var(--color-green-success)' : 'var(--color-gold)'}; color: ${signed ? 'white' : 'var(--color-charcoal)'};" id="petition-submit" ${signed ? 'disabled' : ''}>
-          ${signed ? '✓ Petition Signed' : 'Sign Petition'}
+        <button class="btn-primary" style="background: var(--color-gold); color: var(--color-charcoal);" id="petition-submit">
+          Submit Signature
         </button>
       </div>
       ${renderBottomNav('activism')}
@@ -10046,8 +10294,8 @@ function renderCleanupPage() {
           </div>
         </div>
         <p style="font-size: 10px; color: var(--color-gray); text-align: center; font-weight: 700; margin-bottom: 14px;">Earn 100 XP by joining</p>
-        <button class="btn-primary" style="background: ${isJoined ? 'var(--color-green-success)' : 'var(--color-gold)'}; color: ${isJoined ? 'white' : 'var(--color-charcoal)'};" id="cleanup-join" ${isJoined ? 'disabled' : ''}>
-          ${isJoined ? '✓ Joined Cleanup' : 'Join Event'}
+        <button class="btn-primary" style="background: var(--color-gold); color: var(--color-charcoal);" id="cleanup-join">
+          Request to Join
         </button>
       </div>
       ${renderBottomNav('activism')}
@@ -10102,31 +10350,23 @@ function renderCreateEventPage() {
 
 window.openYathraContribution = async function (event) {
   event?.preventDefault?.();
-  const url = 'https://buymeacoffee.com/yathralanka';
-  const browserPlugin = window.Capacitor?.Plugins?.Browser;
-  if (browserPlugin?.open) {
-    try {
-      await browserPlugin.open({ url });
-      return false;
-    } catch (error) {
-      console.warn('[CONTRIBUTION] Capacitor browser fallback used', error);
-    }
-  }
-  window.open(url, '_blank', 'noopener,noreferrer');
+  window.showFeaturePreviewNotice('Support YathraLanka');
   return false;
 };
 
 function renderRewardsDashboard() {
+  const displayedRank = getRankProgress(state.user?.xp || 0).currentRank.name;
   const rewardCards = [
-    { id: 'rew-link-list', title: 'Your Rewards', desc: 'View earned benefits, coupons, and Landmark Mastery Badges.', icon: '<path d="M20 12v10H4V12M2 7h20v5H2zM12 22V7M12 7H7.5a2.5 2.5 0 1 1 2.4-3.2L12 7Zm0 0h4.5a2.5 2.5 0 1 0-2.4-3.2L12 7Z"/>' },
-    { id: 'rew-link-rank', title: 'Your Rank', desc: `Track your progress as a ${state.user?.rank || 'Novice Explorer'}.`, icon: '<path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0V4Z"/><path d="M7 6H4v2a4 4 0 0 0 4 4M17 6h3v2a4 4 0 0 1-4 4"/>' },
-    { id: 'rew-link-leaderboard', title: 'Leaderboard', desc: 'See how your verified impact compares with other explorers.', icon: '<path d="M4 20V10h4v10M10 20V4h4v16M16 20v-7h4v7"/>' }
+    { id: 'rew-link-list', title: 'Achievement Medals', desc: 'View the achievement medals earned through verified activity.', icon: '<path d="M20 12v10H4V12M2 7h20v5H2zM12 22V7M12 7H7.5a2.5 2.5 0 1 1 2.4-3.2L12 7Zm0 0h4.5a2.5 2.5 0 1 0-2.4-3.2L12 7Z"/>' },
+    { id: 'rew-link-rank', title: 'Rank Progress', desc: `Track your progress as a ${displayedRank}.`, icon: '<path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0V4Z"/><path d="M7 6H4v2a4 4 0 0 0 4 4M17 6h3v2a4 4 0 0 1-4 4"/>' },
+    { id: 'rew-link-benefits', title: 'Experiences and Offers', desc: 'Preview available experience and partner offer pages.', icon: '<path d="M20 12v10H4V12M2 7h20v5H2zM12 22V7"/>' },
+    { id: 'rew-link-leaderboard', title: 'Leaderboard', desc: 'View the explorer leaderboard using public profile names only.', icon: '<path d="M4 20V10h4v10M10 20V4h4v16M16 20v-7h4v7"/>' }
   ];
   return `
     <div class="screen rewards-screen rewards-container" id="rewards-view" style="padding-bottom: 80px;">
       <div class="rewards-top-header" style="padding: 20px 20px 6px 20px;">
-        <h2 style="font-size: 26px; font-weight: 900; display: flex; align-items: center; justify-content: space-between;">Rewards ${window.getGuestModeBadge()}</h2>
-        <p style="font-size: 12px; color: var(--color-gray); margin-top: 4px;">Everything you have achieved.</p>
+        <h2 style="font-size: 26px; font-weight: 900; display: flex; align-items: center; justify-content: space-between;">Achievements ${window.getGuestModeBadge()}</h2>
+        <p style="font-size: 12px; color: var(--color-gray); margin-top: 4px;">Your verified progress, medals, and standing.</p>
       </div>
       <div class="yl-rewards-grid">
         ${rewardCards.map(card => `
@@ -10135,10 +10375,6 @@ function renderRewardsDashboard() {
             <span><strong>${card.title}</strong><small>${card.desc}</small></span>
           </button>
         `).join('')}
-        <button type="button" class="yl-reward-dashboard-card yl-team-support-card" onclick="window.openYathraContribution(event)">
-          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h13v6a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5V8Z"/><path d="M17 10h1.5a2.5 2.5 0 0 1 0 5H17"/><path d="M7 3v2M11 3v2M15 3v2"/></svg>
-          <span><strong>Support YathraLanka</strong><small>Fund the team’s research, documentation, and platform development.</small></span>
-        </button>
       </div>
       ${renderBottomNav('rewards')}
     </div>
@@ -10150,10 +10386,10 @@ function renderRewardsList() {
     <div class="screen" style="padding-bottom: 80px;">
       <div class="header-bar">
         <button class="back-button" id="rewards-list-back">←</button>
-        <div class="header-title">Your Rewards</div>
+        <div class="header-title">Experiences and Offers</div>
       </div>
       <div style="padding: 10px 20px; display: flex; justify-content: space-between; align-items: center;">
-        <p style="font-size: 11px; color: var(--color-gray); max-width: 220px; line-height: 1.4;">Convert your impact into experiences. Redeem coupons and unlock unique souvenirs.</p>
+        <p style="font-size: 11px; color: var(--color-gray); max-width: 220px; line-height: 1.4;">Preview planned experiences and partner offers. Final redemption is not currently enabled.</p>
         <span class="badge-tag" style="background: var(--color-gold); color: var(--color-charcoal); font-weight: 800;">${state.user.xp} Total Points</span>
       </div>
       <div class="location-list-container" style="gap: 12px; margin-top: 8px;">
@@ -10161,28 +10397,28 @@ function renderRewardsList() {
           <img src="Element Pictures/Traditional Cooking Experience.jpg" alt="Cooking" class="reward-coupon-img">
           <div style="flex: 1;">
             <h3 style="font-size: 12px; font-weight: 900; line-height: 1.3;">FREE Traditional Cooking Experience</h3>
-            <span style="font-size: 9px; font-weight: 700; color: var(--color-green-success); display: block; margin-top: 2px;">✓ UNLOCKED</span>
-            <span style="font-size: 8px; color: var(--color-gray);">Unlocked by: Sigiriya Scholar's Trial</span>
+            <span style="font-size: 9px; font-weight: 700; color: var(--color-teal); display: block; margin-top: 2px;">PREVIEW</span>
+            <span style="font-size: 8px; color: var(--color-gray);">Partner activation pending</span>
           </div>
-          <button class="btn-primary" style="width: 80px; height: 32px; font-size: 10px;" id="rew-coupon-use">Use Coupon</button>
+          <button class="btn-primary" style="width: 80px; height: 32px; font-size: 10px;" id="rew-coupon-use">View Offer</button>
         </div>
-        <div class="reward-coupon-card" style="opacity: ${state.user.xp >= 100 ? '1' : '0.7'};">
+        <div class="reward-coupon-card">
           <img src="Element Pictures/Trail Guide.webp" alt="Guide" class="reward-coupon-img">
           <div style="flex: 1;">
             <h3 style="font-size: 12px; font-weight: 900; line-height: 1.3;">20% off Ancient Trail Guide</h3>
             <p style="font-size: 9px; color: var(--color-gray); margin-top: 2px;">Expert guide for Mihintale walks.</p>
-            <span style="font-size: 8px; font-weight: 700; color: var(--color-gray);">Unlock: 100 XP (Tap to unlock)</span>
+            <span style="font-size: 8px; font-weight: 700; color: var(--color-gray);">Partner activation pending</span>
           </div>
-          <button class="btn-outline" style="width: 80px; height: 32px; font-size: 10px; padding: 0; color: var(--color-gray);" id="rew-unlock-guide" ${state.user.xp >= 100 ? '' : 'disabled'}>Unlock Guide</button>
+          <button class="btn-outline" style="width: 80px; height: 32px; font-size: 10px; padding: 0; color: var(--color-gray);" id="rew-unlock-guide">View Offer</button>
         </div>
-        <div class="reward-coupon-card" style="opacity: ${state.user.xp >= 100 ? '1' : '0.7'};">
+        <div class="reward-coupon-card">
           <img src="Element Pictures/Artisan Crafts.jpg.webp" alt="Crafts" class="reward-coupon-img">
           <div style="flex: 1;">
             <h3 style="font-size: 12px; font-weight: 900; line-height: 1.3;">10% off Artisan Crafts</h3>
             <p style="font-size: 9px; color: var(--color-gray); margin-top: 2px;">Authentic local handicraft store.</p>
-            <span style="font-size: 8px; font-weight: 700; color: var(--color-gray);">Unlock: 100 XP (Tap to unlock)</span>
+            <span style="font-size: 8px; font-weight: 700; color: var(--color-gray);">Partner activation pending</span>
           </div>
-          <button class="btn-outline" style="width: 80px; height: 32px; font-size: 10px; padding: 0; color: var(--color-gray);" id="rew-unlock-crafts" ${state.user.xp >= 100 ? '' : 'disabled'}>Unlock Coupon</button>
+          <button class="btn-outline" style="width: 80px; height: 32px; font-size: 10px; padding: 0; color: var(--color-gray);" id="rew-unlock-crafts">View Offer</button>
         </div>
       </div>
       ${renderBottomNav('rewards')}
@@ -10217,64 +10453,56 @@ function renderCouponRedeem() {
 }
 
 function renderRankScreen() {
-  const levels = [
-    { name: 'Grass Toucher', range: '0 - 99 pts', threshold: 0 },
-    { name: 'Wanderer', range: '100 - 249 pts', threshold: 100 },
-    { name: 'Tuk Tuk Trailer', range: '250 - 499 pts', threshold: 250 },
-    { name: 'Magahoyanna', range: '500 - 999 pts', threshold: 500 },
-    { name: 'Island Explorer', range: '1,000 - 2,000 pts', threshold: 1000 },
-    { name: 'Lanka Legend', range: '2,000 - 5,000 pts', threshold: 2000 }
-  ];
-
-  const xp = state.user.xp;
-  const rank = state.user.rank;
-
-  let nextLevel = levels[0];
-  for (let i = 0; i < levels.length; i++) {
-    if (xp < levels[i].threshold) {
-      nextLevel = levels[i];
-      break;
-    }
-    if (i === levels.length - 1) {
-      nextLevel = { name: 'Max Level', threshold: 5000 };
-    }
-  }
-  const diff = nextLevel.threshold - xp;
+  const xp = Math.max(0, Math.floor(Number(state.user?.xp) || 0));
+  const rankInfo = getRankProgress(xp);
+  const currentRank = rankInfo.currentRank;
+  const remainingXP = rankInfo.isHighestRank ? 0 : Math.max(0, rankInfo.nextRankXP - xp);
+  const rangeLabel = (level) => level.maxXP === null
+    ? `${level.minXP.toLocaleString()}+ XP`
+    : `${level.minXP.toLocaleString()}–${level.maxXP.toLocaleString()} XP`;
 
   return `
-    <div class="screen dark-theme" style="padding-bottom: 80px;">
-      <div class="header-bar">
+    <div class="screen rank-screen yl-standard-screen" style="padding-bottom: 88px;">
+      <div class="header-bar yl-standard-header">
         <button class="back-button" id="rank-back">←</button>
-        <div class="header-title">Your Rank</div>
+        <div class="header-title">Rank Progress</div>
       </div>
-      <div style="padding: 10px 20px; display: flex; flex-direction: column; align-items: center;">
-        <h2 style="font-size: 26px; font-weight: 800; text-align: center; margin-bottom: 6px;">Your Rank</h2>
-        <div class="rank-hex-badge">
-          <div style="font-size: 11px; font-weight: 800; color: var(--color-charcoal); text-transform: uppercase;">
-            ${rank === 'None' ? 'No Rank' : rank}
+      <main class="rank-content">
+        <section class="rank-summary-card" aria-label="Current rank">
+          <div class="rank-trophy-icon" aria-hidden="true">🏆</div>
+          <p class="rank-eyebrow">Current rank</p>
+          <h1>${currentRank.name}</h1>
+          <p class="rank-xp-total">${xp.toLocaleString()} XP earned</p>
+          <div class="rank-progress-track" aria-label="${rankInfo.progressPercent}% progress to the next rank">
+            <span style="width: ${rankInfo.progressPercent}%;"></span>
           </div>
-        </div>
-        <p style="font-size: 14px; font-weight: 800; margin-bottom: 2px;">${xp} / ${nextLevel.threshold} pts</p>
-        <p style="font-size: 10px; color: #a9cbd0; margin-bottom: 20px;">
-          ${diff > 0 ? `Only ${diff} pts to next rank!` : 'Max rank reached!'}
-        </p>
-        <div style="display: flex; flex-direction: column; gap: 10px; width: 100%; color: var(--color-charcoal);">
-          ${levels.map(lvl => {
-    const unlocked = xp >= lvl.threshold;
+          <div class="rank-progress-copy">
+            <span>${rangeLabel(currentRank)}</span>
+            <strong>${rankInfo.isHighestRank ? 'Highest rank achieved' : `${remainingXP.toLocaleString()} XP to ${rankInfo.nextRank.name}`}</strong>
+          </div>
+        </section>
+
+        <section class="rank-ladder" aria-label="All ranks">
+          <div class="rank-section-heading">
+            <h2>Rank levels</h2>
+            <p>The same XP levels shown on your dashboard.</p>
+          </div>
+          ${RANK_DEFINITIONS.map((level, index) => {
+    const completed = level.maxXP !== null && xp > level.maxXP;
+    const active = level.id === currentRank.id;
     return `
-              <div class="rank-timeline-row" style="opacity: ${unlocked ? '1' : '0.65'};">
-                <div class="timeline-checkbox ${unlocked ? 'checked' : ''}">
-                  ${unlocked ? '✓' : ''}
+              <div class="rank-level-row ${active ? 'is-current' : ''} ${completed ? 'is-complete' : ''}">
+                <div class="rank-level-marker">${completed ? '✓' : index + 1}</div>
+                <div class="rank-level-copy">
+                  <h3>${level.name}</h3>
+                  <p>${rangeLabel(level)}</p>
                 </div>
-                <div style="flex: 1;">
-                  <h4 style="font-size: 12px; font-weight: 800;">${lvl.name}</h4>
-                  <p style="font-size: 9px; color: var(--color-gray);">${lvl.range}</p>
-                </div>
+                <span class="rank-level-status">${active ? 'Current' : completed ? 'Completed' : 'Locked'}</span>
               </div>
             `;
   }).join('')}
-        </div>
-      </div>
+        </section>
+      </main>
       ${renderBottomNav('rewards')}
     </div>
   `;
@@ -10283,7 +10511,7 @@ function renderRankScreen() {
 function renderLeaderboard() {
   let currentList = [...leaderboardPlayers];
   if (state.user.xp > 0) {
-    const userRow = { name: (auth.currentUser ? auth.currentUser.displayName || 'You' : 'You') + " (Eco Explorer)", points: state.user.xp, role: state.user.role, rank: state.user.rank, isUser: true };
+    const userRow = { name: (auth.currentUser ? auth.currentUser.displayName || 'You' : 'You') + " (Explorer)", points: state.user.xp, role: state.user.role, rank: getRankProgress(state.user.xp).currentRank.name, isUser: true };
     currentList.push(userRow);
   }
   currentList.sort((a, b) => b.points - a.points);
@@ -10347,10 +10575,6 @@ window.handleCustomAvatarUpload = function (event) {
 };
 
 window.openMedalsGalleryModal = function () {
-  if (typeof window.checkAndAwardSmartMedals === 'function') {
-    window.checkAndAwardSmartMedals();
-  }
-
   const unlocked = window.state?.unlockedMedals || [];
   const medals = [
     { id: 'pathfinder_kingdom', title: 'Pathfinder of the Kingdom', tier: 'Bronze', xp: 150, icon: '📜', desc: 'Check in to 3 unique Heritage Trail landmarks within 14 days using live GPS verification.' },
@@ -10379,9 +10603,9 @@ window.openMedalsGalleryModal = function () {
       <div style="width: 44px; height: 5px; background: rgba(212,175,55,0.4); border-radius: 99px; margin: 0 auto 16px auto;"></div>
       
       <div style="text-align: center; margin-bottom: 18px;">
-        <span style="font-size: 10px; font-weight: 800; color: #D4AF37; letter-spacing: 2px; text-transform: uppercase;">Royal Treasury Seals</span>
-        <h3 class="royal-gold-text" style="margin: 4px 0 2px 0; font-size: 20px; font-weight: 900; font-family: 'Cinzel', serif;">S.M.A.R.T. Medals Gallery</h3>
-        <p style="font-size: 11.5px; color: #94A3B8; margin: 0;">Verified heritage achievements and royal seals of Sri Lanka.</p>
+        <span style="font-size: 10px; font-weight: 800; color: #D4AF37; letter-spacing: 2px; text-transform: uppercase;">Achievement Medals</span>
+        <h3 class="royal-gold-text" style="margin: 4px 0 2px 0; font-size: 20px; font-weight: 900; font-family: 'Cinzel', serif;">Your Medal Collection</h3>
+        <p style="font-size: 11.5px; color: #94A3B8; margin: 0;">Medals earned through verified visits, photos, quizzes and community activity.</p>
       </div>
 
       <div style="display: flex; flex-direction: column; gap: 12px; margin-bottom: 20px;">
@@ -10483,7 +10707,7 @@ function renderProfile() {
   const quizzesCount = isGuest ? 0 : (window.state?.user?.quizzesPassed || 0);
 
   return `
-    <div class="screen profile-container royal-vault-screen" id="profile-view" style="position: relative; height: 100%; box-sizing: border-box; overflow-y: auto; padding-top: max(env(safe-area-inset-top), 48px); padding-bottom: 90px; background: #F8F5EE;">
+    <div class="screen profile-container royal-vault-screen yl-standard-screen" id="profile-view" style="position: relative; height: 100%; box-sizing: border-box; overflow-y: auto; padding-top: max(env(safe-area-inset-top), 28px); padding-bottom: 96px;">
       <input type="file" id="profile-avatar-input" accept="image/*" style="display: none;" onchange="window.handleCustomAvatarUpload(event)" />
 
       <!-- Profile Header Title: strictly "My Profile" -->
@@ -10528,15 +10752,15 @@ function renderProfile() {
       <div style="display: flex; gap: 10px; padding: 0 16px; margin-bottom: 20px;">
         <div style="flex: 1; background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 14px; padding: 12px 6px; text-align: center; box-shadow: 0 2px 8px rgba(11, 90, 104, 0.04);">
           <span style="font-size: 19px; font-weight: 900; color: #0B5A68; display: block; line-height: 1;">${medalsCount}</span>
-          <span style="font-size: 9.5px; font-weight: 800; color: #64748B; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; display: block;">Royal Seals</span>
+          <span style="font-size: 9.5px; font-weight: 800; color: #64748B; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; display: block;">Medals Earned</span>
         </div>
         <div style="flex: 1; background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 14px; padding: 12px 6px; text-align: center; box-shadow: 0 2px 8px rgba(11, 90, 104, 0.04);">
           <span style="font-size: 19px; font-weight: 900; color: #0B5A68; display: block; line-height: 1;">${sitesCount}</span>
-          <span style="font-size: 9.5px; font-weight: 800; color: #64748B; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; display: block;">Landmarks</span>
+          <span style="font-size: 9.5px; font-weight: 800; color: #64748B; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; display: block;">Sites Visited</span>
         </div>
         <div style="flex: 1; background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 14px; padding: 12px 6px; text-align: center; box-shadow: 0 2px 8px rgba(11, 90, 104, 0.04);">
           <span style="font-size: 19px; font-weight: 900; color: #0B5A68; display: block; line-height: 1;">${quizzesCount}</span>
-          <span style="font-size: 9.5px; font-weight: 800; color: #64748B; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; display: block;">Mastery Badges</span>
+          <span style="font-size: 9.5px; font-weight: 800; color: #64748B; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; display: block;">Quizzes Passed</span>
         </div>
       </div>
 
@@ -10553,8 +10777,8 @@ function renderProfile() {
               </svg>
             </div>
             <div>
-              <div style="font-size: 13.5px; font-weight: 800; color: #0B5A68;">My Travel Map</div>
-              <div style="font-size: 11px; color: #64748B;">Personalized heritage voyage poster</div>
+              <div style="font-size: 13.5px; font-weight: 800; color: #0B5A68;">My Journey Map</div>
+              <div style="font-size: 11px; color: #64748B;">See the heritage sites you have visited</div>
             </div>
           </div>
           <div style="display: flex; align-items: center; gap: 8px;">
@@ -10573,12 +10797,12 @@ function renderProfile() {
               </svg>
             </div>
             <div>
-              <div style="font-size: 13.5px; font-weight: 800; color: #0B5A68;">My Medals Gallery</div>
-              <div style="font-size: 11px; color: #64748B;">S.M.A.R.T. royal seals & achievements</div>
+              <div style="font-size: 13.5px; font-weight: 800; color: #0B5A68;">Achievement Medals</div>
+              <div style="font-size: 11px; color: #64748B;">View medals earned through verified activities</div>
             </div>
           </div>
           <div style="display: flex; align-items: center; gap: 8px;">
-            <span style="font-size: 10px; font-weight: 800; background: rgba(235, 179, 77, 0.18); color: #B47818; padding: 3px 8px; border-radius: 8px;">${medalsCount}/5 Seals</span>
+            <span style="font-size: 10px; font-weight: 800; background: rgba(235, 179, 77, 0.18); color: #B47818; padding: 3px 8px; border-radius: 8px;">${medalsCount}/5 Earned</span>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#EBB34D" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
           </div>
         </div>
@@ -10595,8 +10819,8 @@ function renderProfile() {
               </svg>
             </div>
             <div>
-              <div style="font-size: 13.5px; font-weight: 800; color: #0B5A68;">My Community Events</div>
-              <div style="font-size: 11px; color: #64748B;">Joined restoration & preservation drives</div>
+              <div style="font-size: 13.5px; font-weight: 800; color: #0B5A68;">Community Activities</div>
+              <div style="font-size: 11px; color: #64748B;">View heritage events you have joined</div>
             </div>
           </div>
           <div style="display: flex; align-items: center; gap: 8px;">
@@ -10615,8 +10839,8 @@ function renderProfile() {
               </svg>
             </div>
             <div>
-              <div style="font-size: 13.5px; font-weight: 800; color: #0B5A68;">Knowledge Quizzes</div>
-              <div style="font-size: 11px; color: #64748B;">Archaeological lore & quiz mastery</div>
+              <div style="font-size: 13.5px; font-weight: 800; color: #0B5A68;">Quiz Progress</div>
+              <div style="font-size: 11px; color: #64748B;">Review completed heritage-site quizzes</div>
             </div>
           </div>
           <div style="display: flex; align-items: center; gap: 8px;">
@@ -10636,11 +10860,11 @@ function renderProfile() {
             </div>
             <div>
               <div style="font-size: 13.5px; font-weight: 800; color: #0B5A68;">Settings</div>
-              <div style="font-size: 11px; color: #64748B;">App preferences, cache, audio cues</div>
+              <div style="font-size: 11px; color: #64748B;">Manage account, privacy and app preferences</div>
             </div>
           </div>
           <div style="display: flex; align-items: center; gap: 8px;">
-            <span style="font-size: 10px; font-weight: 800; background: rgba(100, 116, 139, 0.12); color: #64748B; padding: 3px 8px; border-radius: 8px;">Config</span>
+            <span style="font-size: 10px; font-weight: 800; background: rgba(100, 116, 139, 0.12); color: #64748B; padding: 3px 8px; border-radius: 8px;">Manage</span>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#EBB34D" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
           </div>
         </div>
@@ -10765,7 +10989,7 @@ function renderGlobalFooter(activeTab = 'home') {
     },
     {
       id: 'rewards',
-      label: 'Rewards',
+      label: 'Achievements',
       icon: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="7"></circle><polyline points="8.21 13.89 7 23 12 20 17 23 15.79 13.88"></polyline></svg>`
     },
     {
@@ -11157,9 +11381,6 @@ function attachEvents() {
   });
 
   bind('camera-back', 'click', () => goBack());
-  bind('ledger-back', 'click', () => goBack());
-  bind('success-view-ledger', 'click', () => navigate('ledger'));
-  bind('view-ledger-shortcut-btn', 'click', () => navigate('ledger'));
 
   // Multi-factor verification execution handler
   const processImageVerification = (capturedSrc) => {
@@ -11207,13 +11428,6 @@ function attachEvents() {
 
 
 
-  // Ledger Filter Buttons
-  document.querySelectorAll('[data-ledger-filter]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      state.ledgerFilter = btn.getAttribute('data-ledger-filter');
-      renderActiveScreen();
-    });
-  });
 
   bind('camera-success-continue', 'click', () => { navigate('site-detail'); });
   bind('reject-close', 'click', () => navigate('site-detail'));
@@ -11340,21 +11554,7 @@ function attachEvents() {
 
   bind('petition-back', 'click', () => goBack());
   bind('petition-submit', 'click', () => {
-    if (window.isGuestSession()) {
-      showAuthRequiredModal({
-        title: "Sign the Petition",
-        message: "Sign in or register to add your verified signature to heritage conservation petitions.",
-        redirectView: "petition",
-        targetId: "ritigala-forest"
-      });
-      return;
-    }
-    if (!state.petitionSigned) {
-      state.petitionSigned = true; state.petitionSignatures++;
-      state.user.signedPetitions.push('ritigala-forest');
-      addXP(20, "You signed the Ritigala Protection Petition! +20 XP awarded.");
-      renderActiveScreen();
-    }
+    window.showFeaturePreviewNotice('Petition Submission');
   });
 
   bind('donations-back', 'click', () => goBack());
@@ -11372,80 +11572,44 @@ function attachEvents() {
   }
 
   bind('donations-submit', 'click', () => {
-    if (state.donationAmount > 0) {
-      state.user.donatedAmount += state.donationAmount;
-      const gained = Math.min(500, Math.max(52, Math.ceil(state.donationAmount / 25)));
-      addXP(gained, `Donated Rs. ${state.donationAmount} securely via Payhere framework.`);
-      state.donationAmount = 0; navigate('activism');
-    }
+    window.showFeaturePreviewNotice('Donation Payment');
   });
 
   bind('cleanup-back', 'click', () => goBack());
   bind('cleanup-join', 'click', () => {
-    if (window.isGuestSession()) {
-      showAuthRequiredModal({
-        title: "Join Volunteer Cleanup",
-        message: "Please sign in to register for upcoming site preservation and cleanup events.",
-        redirectView: "cleanup",
-        targetId: "site-cleanup"
-      });
-      return;
-    }
-    if (!state.user.joinedEvents.includes('site-cleanup')) {
-      state.user.joinedEvents.push('site-cleanup');
-      addXP(100, "Registered for Elahera Anicut site cleanup! +100 XP awarded.");
-      renderActiveScreen();
-    }
+    window.showFeaturePreviewNotice('Cleanup Registration');
   });
 
   bind('create-event-back', 'click', () => goBack());
   bind('event-submit', 'click', () => {
-    if (window.isGuestSession()) {
-      showAuthRequiredModal({
-        title: "Host a Community Event",
-        message: "You must be signed in to organize and publish new community heritage initiatives.",
-        redirectView: "create-event"
-      });
-      return;
-    }
-    const loc = document.getElementById('event-location').value;
-    const type = document.getElementById('event-type').value;
-    if (loc) { state.user.joinedEvents.push('community-event'); addXP(200, `Created Community event: ${type}! +200 XP awarded.`); navigate('activism'); }
+    window.showFeaturePreviewNotice('Community Event Publishing');
   });
 
-  bind('rew-link-list', 'click', () => navigate('rewards-list'));
+  bind('rew-link-list', 'click', () => window.openMedalsGalleryModal());
   bind('rew-link-rank', 'click', () => navigate('rank'));
+  bind('rew-link-benefits', 'click', () => navigate('rewards-list'));
   bind('rew-link-leaderboard', 'click', () => navigate('leaderboard'));
   bind('rewards-list-back', 'click', () => navigate('rewards'));
   bind('rew-coupon-use', 'click', () => navigate('coupon-redeem'));
 
   bind('rew-unlock-guide', 'click', () => {
-    requireAuth('REWARD', () => {
-      if (state.user.xp >= 100) { state.user.xp -= 100; state.user.unlockedCoupons.push('guide'); showNotification("Unlocked Ancient Trail Guide Coupon!", "success"); navigate('rewards-list'); }
-      else { showNotification("Requires 100 XP to unlock voucher.", "error"); }
-    });
+    window.showFeaturePreviewNotice('Experience Offer Unlocking');
   });
   bind('rew-unlock-crafts', 'click', () => {
-    requireAuth('REWARD', () => {
-      if (state.user.xp >= 100) { state.user.xp -= 100; state.user.unlockedCoupons.push('crafts'); showNotification("Unlocked Artisan Crafts Coupon!", "success"); navigate('rewards-list'); }
-      else { showNotification("Requires 100 XP to unlock voucher.", "error"); }
-    });
+    window.showFeaturePreviewNotice('Experience Offer Unlocking');
   });
 
   bind('coupon-back', 'click', () => goBack());
   bind('coupon-redeem-btn', 'click', () => {
-    requireAuth('REWARD', () => {
-      showNotification("Voucher code validated by merchant partner interface configuration.", "success");
-    });
+    window.showFeaturePreviewNotice('Offer Redemption');
   });
   bind('coupon-review-submit', 'click', () => {
-    const rev = document.getElementById('coupon-review-input').value;
-    if (rev) { addXP(10, "Partner node critique saved."); document.getElementById('coupon-review-input').value = ''; }
+    window.showFeaturePreviewNotice('Experience Review Submission');
   });
 
   bind('rank-back', 'click', () => goBack());
   bind('leaderboard-back', 'click', () => goBack());
-  bind('leaderboard-view-full', 'click', () => { showNotification("Fetching full layout matrices across global instances..."); });
+  bind('leaderboard-view-full', 'click', () => window.showFeaturePreviewNotice('Full Leaderboard'));
   bind('profile-recap-trigger', 'click', () => navigate('travel-poster'));
   bind('profile-travel-map', 'click', () => navigate('travel-poster'));
   bind('profile-settings', 'click', () => navigate('settings'));
@@ -11701,7 +11865,7 @@ function renderDirectoryGrid(categoryFilter, searchFilter = '') {
   if (!grid) return;
 
   const query = searchFilter.toLowerCase();
-  const filtered = sitesData.filter(s => s.category === categoryFilter && (s.name.toLowerCase().includes(query) || s.district.toLowerCase().includes(query)));
+  const filtered = sitesData.filter(s => window.isProductionSite(s.id) && s.category === categoryFilter && (s.name.toLowerCase().includes(query) || s.district.toLowerCase().includes(query)));
 
   if (filtered.length === 0) {
     grid.innerHTML = `<div style="grid-column: 1/3; text-align: center; color: var(--color-gray); padding: 20px; font-size:12px;">No locations found matching parameters criteria</div>`;
@@ -11727,7 +11891,7 @@ function renderTrailListCards(categoryName, searchFilter = '') {
   if (!container) return;
 
   const query = searchFilter.toLowerCase();
-  const filtered = sitesData.filter(s => s.category === categoryName && (s.name.toLowerCase().includes(query) || s.district.toLowerCase().includes(query)));
+  const filtered = sitesData.filter(s => window.isProductionSite(s.id) && s.category === categoryName && (s.name.toLowerCase().includes(query) || s.district.toLowerCase().includes(query)));
 
   if (filtered.length === 0) {
     container.innerHTML = `<div style="text-align: center; color: var(--color-gray); padding: 20px; font-size:12px;">No matching records found</div>`;
@@ -11847,7 +12011,7 @@ function showActivityNotificationsDrawer() {
                 <span class="activity-icon">🏛️</span>
                 <div class="activity-details">
                   <strong>Mihintale Heritage Pass</strong>
-                  <p>Digital ledger verification is now live for all visitors.</p>
+                  <p>On-site verification guidance is available for the finale locations.</p>
                 </div>
               </div>
             </div>
@@ -11936,30 +12100,30 @@ function captureLivePresencePhoto() {
     ctx.drawImage(videoEl, 0, 0, canvasEl.width, canvasEl.height);
     capturedPhotoData = canvasEl.toDataURL('image/jpeg', 0.85);
   } else {
-    capturedPhotoData = cp?.referenceImage || state.activeSite?.image || sitesData[0].image;
+    showNotification('A live camera frame is required. Allow camera access and try again.', 'error');
+    return;
   }
 
   stopInAppCamera();
 
-  // Compute similarity score against checkpoint embedding
-  const cpEmbedding = cp?.embedding || [0.08, -0.01, 0.12, 0.05];
-  const simScore = calculateCosineSimilarity(cpEmbedding, [0.08, -0.01, 0.11, 0.06]);
-  const scorePercent = Math.round(simScore * 100);
+  const currentLat = Number(userCoordinates?.latitude);
+  const currentLng = Number(userCoordinates?.longitude);
+  const result = evaluateVisionInspection(state.activeSite || sitesData[0], currentLat, currentLng, capturedPhotoData);
 
-  if (simScore >= 0.75) {
+  if (result.status === 'PASSED') {
     if (!state.user.completedCheckpoints) state.user.completedCheckpoints = [];
     if (cp && !state.user.completedCheckpoints.includes(cp.id)) {
       state.user.completedCheckpoints.push(cp.id);
     }
     state.lastVerificationResult = {
-      visionScore: scorePercent,
+      ...result,
       checkpointName: cp?.name || 'Heritage Checkpoint',
       xpEarned: cp?.xpReward || 50
     };
     addXP(cp?.xpReward || 50, `Checkpoint verified: ${cp?.name || 'Heritage Monument'}!`);
     navigate('camera-success');
   } else {
-    showVerificationFailureModal(scorePercent, cp);
+    navigate('camera-reject');
   }
 }
 
@@ -12041,10 +12205,11 @@ function showCheckpointBriefingModal(checkpoint) {
   if (existing) existing.remove();
 
   const site = state.activeSite || sitesData[0];
-  const userLat = (userCoordinates && userCoordinates.latitude) ? userCoordinates.latitude : 7.9570;
-  const userLng = (userCoordinates && userCoordinates.longitude) ? userCoordinates.longitude : 80.7603;
-  const distMeters = calculateHaversineDistanceMeters(userLat, userLng, site.latitude, site.longitude);
-  const isTooFar = distMeters > 1000;
+  const hasLocation = Number.isFinite(Number(userCoordinates?.latitude)) && Number.isFinite(Number(userCoordinates?.longitude));
+  const distMeters = hasLocation
+    ? calculateHaversineDistanceMeters(Number(userCoordinates.latitude), Number(userCoordinates.longitude), site.latitude, site.longitude)
+    : null;
+  const isTooFar = !hasLocation || distMeters > GEOFENCE_RADIUS_METERS;
 
   const modalHtml = `
     <div class="auth-modal-overlay" id="checkpoint-briefing-modal-overlay">
@@ -12065,13 +12230,13 @@ function showCheckpointBriefingModal(checkpoint) {
         </div>
 
         <div style="background: rgba(12,108,122,0.08); border-radius: 10px; padding: 10px 12px; margin-bottom: 14px; font-size: 11px; display: flex; justify-content: space-between; align-items: center;">
-          <span>GPS Proximity: <strong>${Math.round(distMeters)}m</strong></span>
+          <span>GPS Proximity: <strong>${hasLocation ? `${Math.round(distMeters)}m` : 'Location required'}</strong></span>
           <span style="color: var(--color-gold); font-weight: 800;">🌟 +${checkpoint.xpReward} XP</span>
         </div>
 
         ${isTooFar ? `
           <div style="background: #FFF3CD; border: 1px solid #FFEBAA; border-radius: 10px; padding: 10px; font-size: 11px; color: #856404; margin-bottom: 14px; line-height: 1.4;">
-            ⚠️ You are currently <strong>${(distMeters / 1000).toFixed(1)} km</strong> away. Please move within 1,000 meters of the site to begin verification.
+            ${hasLocation ? `⚠️ You are currently <strong>${(distMeters / 1000).toFixed(1)} km</strong> away. Please move within 500 metres of the site to begin verification.` : '⚠️ Enable precise location access before starting verification.'}
           </div>
         ` : ''}
 
@@ -12294,19 +12459,34 @@ function handleEmailAuthBoot() {
 // SINGLE-LANDMARK 15-MINUTE ON-SITE SESSION
 // ============================================================================
 
-window.ACTIVE_LANDMARK_SESSION_KEY = 'yathralanka_active_landmark_session_v1';
-window.ACTIVE_LANDMARK_SESSION_DURATION_MS = 15 * 60 * 1000;
+window.ACTIVE_LANDMARK_SESSION_KEY = 'yathralanka_active_landmark_session_v2';
+window.ACTIVE_LANDMARK_DEFAULT_DURATION_MS = 15 * 60 * 1000;
+window.ACTIVE_LANDMARK_OUTSIDE_GRACE_MS = 60 * 60 * 1000;
+window.getLandmarkSessionDurationMs = function (siteId) {
+  return String(siteId || '').toLowerCase().trim() === 'bmich'
+    ? 3 * 60 * 1000
+    : window.ACTIVE_LANDMARK_DEFAULT_DURATION_MS;
+};
 
 window.getActiveLandmarkSession = function () {
   try {
     const raw = localStorage.getItem(window.ACTIVE_LANDMARK_SESSION_KEY);
     if (!raw) return null;
     const session = JSON.parse(raw);
-    if (!session?.siteId || !Number.isFinite(Number(session.expiresAt))) {
+    if (!session?.siteId) {
       localStorage.removeItem(window.ACTIVE_LANDMARK_SESSION_KEY);
       return null;
     }
-    if (Number(session.expiresAt) <= Date.now()) {
+    session.durationMs = Number(session.durationMs) || window.getLandmarkSessionDurationMs(session.siteId);
+    session.accumulatedMs = Math.max(0, Number(session.accumulatedMs) || 0);
+    session.lastTickAt = Number(session.lastTickAt) || Date.now();
+    if (session.pausedAt && Date.now() - Number(session.pausedAt) >= window.ACTIVE_LANDMARK_OUTSIDE_GRACE_MS) {
+      localStorage.removeItem(window.ACTIVE_LANDMARK_SESSION_KEY);
+      document.getElementById('active-landmark-session-clock')?.remove();
+      window.showNotification?.(`The paused visit at ${session.siteName || 'the landmark'} expired after 60 minutes outside the verification area.`, 'info');
+      return null;
+    }
+    if (session.accumulatedMs >= session.durationMs) {
       if (typeof window.completeActiveLandmarkSession === 'function') {
         window.completeActiveLandmarkSession(session);
       } else {
@@ -12344,15 +12524,21 @@ window.startActiveLandmarkSession = function (site) {
   }
 
   const startedAt = Date.now();
+  const durationMs = window.getLandmarkSessionDurationMs(requestedId);
   const session = {
     siteId: requestedId,
     siteName: site.name || 'Current Landmark',
     startedAt,
-    expiresAt: startedAt + window.ACTIVE_LANDMARK_SESSION_DURATION_MS
+    durationMs,
+    accumulatedMs: 0,
+    lastTickAt: startedAt,
+    lastInsideAt: startedAt,
+    pausedAt: null,
+    pauseReason: null
   };
   localStorage.setItem(window.ACTIVE_LANDMARK_SESSION_KEY, JSON.stringify(session));
   window.ensureActiveLandmarkSessionTimer();
-  window.showNotification?.(`15-minute on-site session started for ${session.siteName}.`, 'success');
+  window.showNotification?.(`${Math.round(durationMs / 60000)}-minute on-site session started for ${session.siteName}.`, 'success');
   return session;
 };
 
@@ -12367,7 +12553,7 @@ window.showLocationVerificationComplete = function (session, xpAwarded) {
       <div class="location-verification-medal">✓</div>
       <div class="location-verification-eyebrow">LIFETIME VISIT RECORDED</div>
       <h2 id="location-verification-title">Location Verification Complete</h2>
-      <p>Your full 15-minute presence at <strong>${session.siteName || 'this landmark'}</strong> has been verified. This visit is now permanently part of your YathraLanka journey.</p>
+      <p>Your full ${Math.round((Number(session.durationMs) || window.getLandmarkSessionDurationMs(session.siteId)) / 60000)}-minute presence at <strong>${session.siteName || 'this landmark'}</strong> has been verified. This visit is now permanently part of your YathraLanka journey.</p>
       <div class="location-verification-xp">${xpAwarded ? `+${xpAwarded} LOCATION XP` : 'LOCATION ALREADY RECORDED'}<span>Total: ${totalXP} XP</span></div>
       <p class="location-verification-note">The location timer will not run again for this landmark.</p>
       <button type="button" id="view-location-achievement">View Verified Landmark</button>
@@ -12392,6 +12578,10 @@ window.completeActiveLandmarkSession = function (session) {
       clearInterval(window._activeLandmarkSessionInterval);
       window._activeLandmarkSessionInterval = null;
     }
+    if (window._activeLandmarkBoundaryInterval) {
+      clearInterval(window._activeLandmarkBoundaryInterval);
+      window._activeLandmarkBoundaryInterval = null;
+    }
 
     const cleanId = String(session.siteId).toLowerCase().trim();
     const before = window.getLandmarkAchievementStatus(cleanId);
@@ -12405,7 +12595,7 @@ window.completeActiveLandmarkSession = function (session) {
     if (!progress[cleanId]) progress[cleanId] = {};
     progress[cleanId].gpsVerified = true;
     progress[cleanId].locationVerifiedAt = progress[cleanId].locationVerifiedAt || Date.now();
-    progress[cleanId].locationVerificationDurationMinutes = 15;
+    progress[cleanId].locationVerificationDurationMinutes = Math.round((Number(session.durationMs) || window.getLandmarkSessionDurationMs(cleanId)) / 60000);
     const uid = auth?.currentUser?.uid || window.state?.user?.uid;
     localStorage.setItem(window.getSiteProgressKey(uid), JSON.stringify(progress));
     if (typeof window.recalculateTotalXP === 'function') window.recalculateTotalXP();
@@ -12425,7 +12615,7 @@ window.completeActiveLandmarkSession = function (session) {
 
 window.showActiveLandmarkSessionConflict = function (session) {
   document.getElementById('active-landmark-session-conflict')?.remove();
-  const remainingSeconds = Math.max(0, Math.ceil((Number(session.expiresAt) - Date.now()) / 1000));
+  const remainingSeconds = Math.max(0, Math.ceil(((Number(session.durationMs) || window.getLandmarkSessionDurationMs(session.siteId)) - (Number(session.accumulatedMs) || 0)) / 1000));
   const minutes = Math.floor(remainingSeconds / 60);
   const seconds = remainingSeconds % 60;
   const timeText = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
@@ -12465,6 +12655,10 @@ window.ensureActiveLandmarkSessionTimer = function () {
       clearInterval(window._activeLandmarkSessionInterval);
       window._activeLandmarkSessionInterval = null;
     }
+    if (window._activeLandmarkBoundaryInterval) {
+      clearInterval(window._activeLandmarkBoundaryInterval);
+      window._activeLandmarkBoundaryInterval = null;
+    }
     return;
   }
 
@@ -12474,14 +12668,14 @@ window.ensureActiveLandmarkSessionTimer = function () {
     clock.type = 'button';
     clock.id = 'active-landmark-session-clock';
     clock.className = 'active-landmark-session-clock';
-    clock.setAttribute('aria-label', `Active 15-minute visit at ${session.siteName}`);
+    clock.setAttribute('aria-label', `Active visit at ${session.siteName}`);
     clock.title = `Active visit: ${session.siteName}`;
     clock.innerHTML = `
       <svg viewBox="0 0 52 52" aria-hidden="true">
         <circle class="active-session-clock-track" cx="26" cy="26" r="22"></circle>
         <circle class="active-session-clock-progress" cx="26" cy="26" r="22"></circle>
       </svg>
-      <span class="active-session-clock-time">15:00</span>
+      <span class="active-session-clock-time">${String(Math.round(session.durationMs / 60000)).padStart(2, '0')}:00</span>
       <span class="active-session-clock-label">ON SITE</span>
     `;
     clock.onclick = () => {
@@ -12502,23 +12696,81 @@ window.ensureActiveLandmarkSessionTimer = function () {
       }
       return;
     }
-    const remainingMs = Math.max(0, Number(current.expiresAt) - Date.now());
+    const now = Date.now();
+    const durationMs = Number(current.durationMs) || window.getLandmarkSessionDurationMs(current.siteId);
+    const lastTickAt = Number(current.lastTickAt) || now;
+    if (!current.pausedAt) {
+      current.accumulatedMs = Math.min(durationMs, (Number(current.accumulatedMs) || 0) + Math.min(2000, Math.max(0, now - lastTickAt)));
+    }
+    current.lastTickAt = now;
+    localStorage.setItem(window.ACTIVE_LANDMARK_SESSION_KEY, JSON.stringify(current));
+    const remainingMs = Math.max(0, durationMs - Number(current.accumulatedMs || 0));
     const remainingSeconds = Math.ceil(remainingMs / 1000);
     const minutes = Math.floor(remainingSeconds / 60);
     const seconds = remainingSeconds % 60;
     const timeElement = clockElement.querySelector('.active-session-clock-time');
-    if (timeElement) timeElement.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+    if (timeElement) timeElement.textContent = current.pausedAt ? 'PAUSED' : `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+    const labelElement = clockElement.querySelector('.active-session-clock-label');
+    if (labelElement) labelElement.textContent = current.pausedAt ? 'RETURN ≤60M' : 'ON SITE';
+    clockElement.classList.toggle('is-paused', Boolean(current.pausedAt));
     const progress = clockElement.querySelector('.active-session-clock-progress');
     if (progress) {
       const circumference = 2 * Math.PI * 22;
       progress.style.strokeDasharray = String(circumference);
-      progress.style.strokeDashoffset = String(circumference * (1 - remainingMs / window.ACTIVE_LANDMARK_SESSION_DURATION_MS));
+      progress.style.strokeDashoffset = String(circumference * (1 - remainingMs / durationMs));
+    }
+    if (remainingMs <= 0) window.completeActiveLandmarkSession(current);
+  };
+
+  const recheckBoundary = async () => {
+    if (window._activeLandmarkLocationCheck) return;
+    const current = window.getActiveLandmarkSession();
+    if (!current) return;
+    window._activeLandmarkLocationCheck = true;
+    try {
+      const pool = window.sitesData || [];
+      const site = pool.find(item => String(item.id).toLowerCase() === String(current.siteId).toLowerCase());
+      if (!site) return;
+      const position = await window.refreshCurrentLocationForVerification(site.id, false);
+      const coords = window.resolveSiteCoordinates?.(site) || { lat: site.latitude, lng: site.longitude };
+      const distance = calculateHaversineDistanceMeters(Number(position.latitude), Number(position.longitude), Number(coords.lat), Number(coords.lng));
+      const latest = window.getActiveLandmarkSession();
+      if (!latest) return;
+      if (!Number.isFinite(distance) || distance > window.VERIFICATION_RADIUS_METERS) {
+        if (!latest.pausedAt) {
+          latest.pausedAt = Number(latest.lastInsideAt) || Date.now();
+          latest.pauseReason = 'outside';
+          window.showNotification?.(`Visit timer paused. Return within 60 minutes to ${latest.siteName} to resume.`, 'info');
+        }
+      } else if (latest.pausedAt) {
+        latest.pausedAt = null;
+        latest.pauseReason = null;
+        latest.lastTickAt = Date.now();
+        latest.lastInsideAt = Date.now();
+        window.showNotification?.(`Visit timer resumed at ${latest.siteName}.`, 'success');
+      } else {
+        latest.lastInsideAt = Date.now();
+      }
+      localStorage.setItem(window.ACTIVE_LANDMARK_SESSION_KEY, JSON.stringify(latest));
+    } catch (error) {
+      const latest = window.getActiveLandmarkSession();
+      if (latest && !latest.pausedAt) {
+        latest.pausedAt = Number(latest.lastInsideAt) || Date.now();
+        latest.pauseReason = 'location-unavailable';
+        localStorage.setItem(window.ACTIVE_LANDMARK_SESSION_KEY, JSON.stringify(latest));
+      }
+    } finally {
+      window._activeLandmarkLocationCheck = false;
     }
   };
 
   updateClock();
   if (!window._activeLandmarkSessionInterval) {
     window._activeLandmarkSessionInterval = setInterval(updateClock, 1000);
+  }
+  recheckBoundary();
+  if (!window._activeLandmarkBoundaryInterval) {
+    window._activeLandmarkBoundaryInterval = setInterval(recheckBoundary, 10000);
   }
 };
 
@@ -12580,7 +12832,7 @@ window.getLandmarkVerificationOption = function (site, optionNum) {
   };
 };
 
-window.openTargetFramingView = function (siteId = 'independence_memorial_hall', optionNum = 1) {
+window.openTargetFramingView = async function (siteId = 'independence_memorial_hall', optionNum = 1) {
   if (typeof window.updateGlobalFooterVisibility === 'function') {
     window.updateGlobalFooterVisibility();
   }
@@ -12591,6 +12843,8 @@ window.openTargetFramingView = function (siteId = 'independence_memorial_hall', 
     name: 'Independence Memorial Hall',
     image: '/Element%20Pictures/Independence%20Memorial%20Hall.jpg'
   };
+
+  if (!(await window.requireFreshVerificationAccess(site.id))) return;
 
   const option = window.getLandmarkVerificationOption(site, optionNum);
   const refImg = option.image || site.image || '/assets/images/independence_option_1.jpg';
@@ -12612,7 +12866,7 @@ window.openTargetFramingView = function (siteId = 'independence_memorial_hall', 
       <button onclick="document.getElementById('target-framing-screen').remove(); window.navigate('site-detail', { id: '${site.id}' });" style="background: none; border: none; color: #0B5A68; font-weight: 800; font-size: 14px; cursor: pointer;">
         ← Return to ${site.name}
       </button>
-      <h3 style="margin: 0; font-size: 14px; font-weight: 800; color: #0B5A68;">Target Specimen Framing</h3>
+      <h3 style="margin: 0; font-size: 14px; font-weight: 800; color: #0B5A68;">Photo Guide</h3>
       <span style="font-size: 10px; font-weight: 800; background: #FDF6E2; color: #B47818; padding: 4px 8px; border-radius: 6px; border: 1px solid rgba(235, 179, 77, 0.4);">
         Option ${optionNum}
       </span>
@@ -12758,6 +13012,50 @@ window.verificationArrayCorrelation = function (left, right) {
   return denominator > 0 ? Math.max(-1, Math.min(1, numerator / denominator)) : 0;
 };
 
+window.verificationHogSimilarity = function (leftLuma, rightLuma, width, height, cells = 6, bins = 9) {
+  const createDescriptor = (luma) => {
+    const descriptor = new Float32Array(cells * cells * bins);
+    for (let y = 1; y < height - 1; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        const index = y * width + x;
+        const dx = luma[index + 1] - luma[index - 1];
+        const dy = luma[index + width] - luma[index - width];
+        const magnitude = Math.hypot(dx, dy);
+        let angle = Math.atan2(dy, dx);
+        if (angle < 0) angle += Math.PI;
+        if (angle >= Math.PI) angle -= Math.PI;
+        const cellX = Math.min(cells - 1, Math.floor((x / width) * cells));
+        const cellY = Math.min(cells - 1, Math.floor((y / height) * cells));
+        const bin = Math.min(bins - 1, Math.floor((angle / Math.PI) * bins));
+        descriptor[((cellY * cells) + cellX) * bins + bin] += magnitude;
+      }
+    }
+
+    for (let cell = 0; cell < cells * cells; cell++) {
+      const offset = cell * bins;
+      let magnitudeSquared = 0;
+      for (let bin = 0; bin < bins; bin++) {
+        magnitudeSquared += descriptor[offset + bin] * descriptor[offset + bin];
+      }
+      const normalizer = Math.sqrt(magnitudeSquared) + 0.000001;
+      for (let bin = 0; bin < bins; bin++) descriptor[offset + bin] /= normalizer;
+    }
+    return descriptor;
+  };
+  const leftDescriptor = createDescriptor(leftLuma);
+  const rightDescriptor = createDescriptor(rightLuma);
+  let dot = 0;
+  let leftMagnitude = 0;
+  let rightMagnitude = 0;
+  for (let i = 0; i < leftDescriptor.length; i++) {
+    dot += leftDescriptor[i] * rightDescriptor[i];
+    leftMagnitude += leftDescriptor[i] * leftDescriptor[i];
+    rightMagnitude += rightDescriptor[i] * rightDescriptor[i];
+  }
+  const denominator = Math.sqrt(leftMagnitude * rightMagnitude);
+  return denominator > 0 ? Math.max(0, Math.min(1, dot / denominator)) : 0;
+};
+
 window.analyzeLandmarkPhoto = async function (video, referenceImageSrc, overlayImage) {
   const previewWidth = Math.min(720, video.videoWidth || 720);
   const previewHeight = Math.max(1, Math.round(previewWidth * (video.videoHeight || 1280) / (video.videoWidth || 720)));
@@ -12800,8 +13098,6 @@ window.analyzeLandmarkPhoto = async function (video, referenceImageSrc, overlayI
   } else {
     window.drawVerificationCover(capturedContext, video, video.videoWidth, video.videoHeight, sampleSize, sampleSize);
   }
-  const comparisonDataUrl = capturedSample.toDataURL('image/jpeg', 0.88);
-
   const referenceImage = await window.loadVerificationReferenceImage(referenceImageSrc);
   const referenceSample = document.createElement('canvas');
   referenceSample.width = sampleSize;
@@ -12816,11 +13112,21 @@ window.analyzeLandmarkPhoto = async function (video, referenceImageSrc, overlayI
   } else {
     window.drawVerificationCover(referenceContext, referenceImage, referenceImage.naturalWidth, referenceImage.naturalHeight, sampleSize, sampleSize);
   }
+  const comparisonDataUrl = capturedSample.toDataURL('image/jpeg', 0.9);
+  const referenceComparisonDataUrl = referenceSample.toDataURL('image/jpeg', 0.9);
 
   const capturedFeatures = window.extractVerificationFeatures(capturedContext.getImageData(0, 0, sampleSize, sampleSize), sampleSize, sampleSize);
   const referenceFeatures = window.extractVerificationFeatures(referenceContext.getImageData(0, 0, sampleSize, sampleSize), sampleSize, sampleSize);
-  const structure = (window.verificationArrayCorrelation(capturedFeatures.luma, referenceFeatures.luma) + 1) / 2;
-  const outline = (window.verificationArrayCorrelation(capturedFeatures.edges, referenceFeatures.edges) + 1) / 2;
+  const pixelStructure = (window.verificationArrayCorrelation(capturedFeatures.luma, referenceFeatures.luma) + 1) / 2;
+  const pixelOutline = (window.verificationArrayCorrelation(capturedFeatures.edges, referenceFeatures.edges) + 1) / 2;
+  const shapeSimilarity = window.verificationHogSimilarity(
+    capturedFeatures.luma,
+    referenceFeatures.luma,
+    sampleSize,
+    sampleSize
+  );
+  const structure = Math.max(pixelStructure, shapeSimilarity);
+  const outline = Math.max(pixelOutline, Math.min(1, shapeSimilarity * 0.78));
   let color = 0;
   for (let i = 0; i < capturedFeatures.histogram.length; i++) {
     color += Math.min(capturedFeatures.histogram[i], referenceFeatures.histogram[i]);
@@ -12839,6 +13145,7 @@ window.analyzeLandmarkPhoto = async function (video, referenceImageSrc, overlayI
     passed: score >= 75,
     capturedDataUrl,
     comparisonDataUrl,
+    referenceComparisonDataUrl,
     metrics: {
       structure: Math.round(structure * 100),
       outline: Math.round(outline * 100),
@@ -12848,7 +13155,18 @@ window.analyzeLandmarkPhoto = async function (video, referenceImageSrc, overlayI
   };
 };
 
-window.openPhotoMatchCamera = function (siteId = 'independence_memorial_hall', optionNum = 1) {
+window.openPhotoMatchCamera = async function (siteId = 'independence_memorial_hall', optionNum = 1) {
+  if (typeof window._photoMatchCameraCleanup === 'function') {
+    window._photoMatchCameraCleanup();
+  }
+  if (window._silhouettePollingInterval) {
+    clearInterval(window._silhouettePollingInterval);
+    window._silhouettePollingInterval = null;
+  }
+  if (window._enforceCameraLayoutInterval) {
+    clearInterval(window._enforceCameraLayoutInterval);
+    window._enforceCameraLayoutInterval = null;
+  }
   if (typeof window.updateGlobalFooterVisibility === 'function') {
     window.updateGlobalFooterVisibility();
   }
@@ -12859,6 +13177,8 @@ window.openPhotoMatchCamera = function (siteId = 'independence_memorial_hall', o
     name: 'Independence Memorial Hall',
     image: '/Element%20Pictures/Independence%20Memorial%20Hall.jpg'
   };
+
+  if (!(await window.requireFreshVerificationAccess(site.id))) return;
 
   const option = window.getLandmarkVerificationOption(site, optionNum);
   const refImgSrc = option.image || site.image || '/assets/images/independence_option_1.jpg';
@@ -12886,7 +13206,7 @@ window.openPhotoMatchCamera = function (siteId = 'independence_memorial_hall', o
 
     <div class="verification-zoom-controls" aria-label="Reference image zoom controls">
       <button type="button" id="btn-verification-zoom-out" aria-label="Zoom reference image out">−</button>
-      <input type="range" id="verification-zoom-range" min="50" max="250" step="5" value="100" aria-label="Reference image zoom" />
+      <input type="range" id="verification-zoom-range" min="50" max="250" step="1" value="100" aria-label="Reference image zoom" />
       <button type="button" id="btn-verification-zoom-in" aria-label="Zoom reference image in">+</button>
       <output id="verification-zoom-value" for="verification-zoom-range">100%</output>
     </div>
@@ -12936,7 +13256,11 @@ window.openPhotoMatchCamera = function (siteId = 'independence_memorial_hall', o
     if (zoomValue) zoomValue.textContent = `${Math.round(verificationZoom * 100)}%`;
     if (pendingZoomFrame) cancelAnimationFrame(pendingZoomFrame);
     pendingZoomFrame = requestAnimationFrame(() => {
-      if (overlayImage) overlayImage.style.setProperty('--verification-overlay-scale', verificationZoom.toFixed(3));
+      if (overlayImage) {
+        const scale = verificationZoom.toFixed(3);
+        overlayImage.style.setProperty('--verification-overlay-scale', scale);
+        overlayImage.style.setProperty('transform', `translate3d(0, 0, 0) scale(${scale})`, 'important');
+      }
       pendingZoomFrame = 0;
     });
   };
@@ -12991,30 +13315,32 @@ window.openPhotoMatchCamera = function (siteId = 'independence_memorial_hall', o
       }
     });
   }
+  const reapplyCameraLayout = () => {
+    enforceCameraLayout();
+    requestAnimationFrame(() => applyVerificationZoom(verificationZoom));
+  };
+  const handleCameraOrientationChange = () => setTimeout(reapplyCameraLayout, 150);
   window.enforceCameraLayout = enforceCameraLayout;
-  window.addEventListener('resize', enforceCameraLayout);
-  window.addEventListener('orientationchange', () => setTimeout(enforceCameraLayout, 150));
-  if (!window._enforceCameraLayoutInterval) {
-    window._enforceCameraLayoutInterval = setInterval(enforceCameraLayout, 500);
-  }
+  window.addEventListener('resize', reapplyCameraLayout);
+  window.addEventListener('orientationchange', handleCameraOrientationChange);
 
   window.checkAndRotateSilhouette = function () {
     const overlay = document.getElementById('ghost-overlay-img') || document.getElementById('ghost-guide-overlay') || document.querySelector('.ghost-overlay-frame');
     if (!overlay) return;
     const scaleValue = verificationZoom.toFixed(3);
-    if (overlay.style.getPropertyValue('--verification-overlay-scale') !== scaleValue) {
-      overlay.style.setProperty('--verification-overlay-scale', scaleValue);
-    }
+    overlay.style.setProperty('--verification-overlay-scale', scaleValue);
+    overlay.style.setProperty('transform', `translate3d(0, 0, 0) scale(${scaleValue})`, 'important');
   };
 
   window.updateSilhouetteOrientation = window.checkAndRotateSilhouette;
 
-  // Attach multiple listeners
-  window.addEventListener('resize', window.checkAndRotateSilhouette);
-  window.addEventListener('orientationchange', () => setTimeout(window.checkAndRotateSilhouette, 100));
-  if (!window._silhouettePollingInterval) {
-    window._silhouettePollingInterval = setInterval(window.checkAndRotateSilhouette, 250);
-  }
+  window._photoMatchCameraCleanup = () => {
+    window.removeEventListener('resize', reapplyCameraLayout);
+    window.removeEventListener('orientationchange', handleCameraOrientationChange);
+    if (pendingZoomFrame) cancelAnimationFrame(pendingZoomFrame);
+    pendingZoomFrame = 0;
+    window._photoMatchCameraCleanup = null;
+  };
 
   // Initial check when camera opens
   enforceCameraLayout();
@@ -13023,13 +13349,7 @@ window.openPhotoMatchCamera = function (siteId = 'independence_memorial_hall', o
 
   // Handle Close Button (Routing back to site-detail)
   document.getElementById('btn-close-match-camera').onclick = function () {
-    if (window._silhouetteOrientationHandler) {
-      window.removeEventListener('orientationchange', window._silhouetteOrientationHandler);
-      window.removeEventListener('resize', window._silhouetteOrientationHandler);
-      if (screen.orientation) {
-        screen.orientation.removeEventListener('change', window._silhouetteOrientationHandler);
-      }
-    }
+    window._photoMatchCameraCleanup?.();
     const video = document.getElementById('camera-feed');
     if (video && video.srcObject) {
       video.srcObject.getTracks().forEach(track => track.stop());
@@ -13068,6 +13388,7 @@ window.openPhotoMatchCamera = function (siteId = 'independence_memorial_hall', o
       `;
       cameraModal.appendChild(errorPanel);
       document.getElementById('retry-in-app-camera').onclick = () => {
+        window._photoMatchCameraCleanup?.();
         cameraModal.remove();
         window.openPhotoMatchCamera(site.id, optionNum);
       };
@@ -13084,14 +13405,7 @@ window.snapShutterAndVerify = async function (siteId = 'independence_memorial_ha
     name: 'Independence Memorial Hall'
   };
 
-  // Clean up orientation listener
-  if (window._silhouetteOrientationHandler) {
-    window.removeEventListener('orientationchange', window._silhouetteOrientationHandler);
-    window.removeEventListener('resize', window._silhouetteOrientationHandler);
-    if (screen.orientation) {
-      screen.orientation.removeEventListener('change', window._silhouetteOrientationHandler);
-    }
-  }
+  if (!(await window.requireFreshVerificationAccess(site.id))) return;
 
   // STRICT: Do not analyze if stream is not active or video is paused/empty
   if (!video || !video.srcObject || video.paused || video.ended || !video.videoWidth) {
@@ -13125,6 +13439,8 @@ window.snapShutterAndVerify = async function (siteId = 'independence_memorial_ha
     return;
   }
 
+  window._photoMatchCameraCleanup?.();
+
   // Stop camera stream
   if (video.srcObject) {
     video.srcObject.getTracks().forEach(track => track.stop());
@@ -13156,7 +13472,6 @@ window.snapShutterAndVerify = async function (siteId = 'independence_memorial_ha
     passed: result.passed,
     attemptedAt: Date.now()
   };
-
   const alreadyPhotoVerified = Boolean(progress.photoVerified || localStorage.getItem('site_photo_verified_' + cleanId) === 'true');
   let xpAwarded = 0;
 
@@ -13206,7 +13521,7 @@ window.showPhotoComparisonResult = function (site, option, result, xpAwarded = 0
           : `The captured image matched ${option.title} by ${result.score}%, which is ${thresholdDifference}% below the required score. This does not prevent trying any other option.`}
       </p>
       <div class="photo-result-comparison">
-        <figure><img src="${option.image}" alt="Selected reference image"><figcaption>Original reference</figcaption></figure>
+        <figure><img src="${result.referenceComparisonDataUrl || option.image}" alt="Visible reference area used for comparison"><figcaption>Reference area compared</figcaption></figure>
         <figure><img src="${result.comparisonDataUrl || result.capturedDataUrl}" alt="Camera area used for comparison"><figcaption>Camera area compared</figcaption></figure>
       </div>
       <div class="photo-result-metrics" aria-label="Image comparison details">

@@ -1,8 +1,13 @@
 // YathraLanka App Data Configuration
 
+// The public build always uses the real landmark coordinates. The separately
+// labelled phone-test build keeps the temporary Flower Road coordinate so the
+// school team can test Independence Memorial Hall without changing live data.
+const IS_PHONE_TEST_BUILD = import.meta.env.MODE === 'phone-test';
+
 export const initialUserState = {
   xp: 0,
-  rank: "None",
+  rank: "Novice Explorer",
   medals: 0,
   sitesVisited: 0,
   quizzesPassed: 0,
@@ -23,19 +28,18 @@ export const initialUserState = {
 };
 
 export const rankingScale = [
-  { rank: "Grass Toucher", range: [0, 99], threshold: 0 },
-  { rank: "Wanderer", range: [100, 249], threshold: 100 },
-  { rank: "Tuk Tuk Trailer", range: [250, 499], threshold: 250 },
-  { rank: "Magahoyanna", range: [500, 999], threshold: 500 },
-  { rank: "Island Explorer", range: [1000, 2000], threshold: 1000 },
-  { rank: "Lanka Legend", range: [2000, 5000], threshold: 2000 }
+  { rank: "Novice Explorer", range: [0, 999], threshold: 0 },
+  { rank: "Pathfinder", range: [1000, 2499], threshold: 1000 },
+  { rank: "Heritage Seeker", range: [2500, 4999], threshold: 2500 },
+  { rank: "Cultural Guardian", range: [5000, 9999], threshold: 5000 },
+  { rank: "Legacy Ambassador", range: [10000, null], threshold: 10000 }
 ];
 
 export const leaderboardPlayers = [
-  { name: "Suranga M", points: 5820, role: "Explorer", rank: "Lanka Legend" },
-  { name: "Anjali R.", points: 5330, role: "Volunteer", rank: "Lanka Legend" },
-  { name: "Dilhani", points: 3540, role: "Organizer", rank: "Island Explorer" },
-  { name: "Mihiranga T.", points: 1160, role: "Quiz Master", rank: "Island Explorer" }
+  { name: "Suranga M", points: 5820, role: "Explorer", rank: "Cultural Guardian" },
+  { name: "Anjali R.", points: 5330, role: "Volunteer", rank: "Cultural Guardian" },
+  { name: "Dilhani", points: 3540, role: "Organizer", rank: "Heritage Seeker" },
+  { name: "Mihiranga T.", points: 1160, role: "Quiz Master", rank: "Pathfinder" }
 ];
 
 export const SMART_MEDALS_CONFIG = [
@@ -104,8 +108,10 @@ export const sitesData = [
     openStatus: "Open now",
     description: "Built to commemorate the independence of Sri Lanka from British rule in 1948, featuring traditional Kandyan architectural stonework and 60 carved stone lions.",
     image: "/Element%20Pictures/Independence%20Memorial%20Hall.jpg",
-    latitude: 6.90413,
-    longitude: 79.86758,
+    latitude: IS_PHONE_TEST_BUILD ? 6.906630 : 6.90413,
+    longitude: IS_PHONE_TEST_BUILD ? 79.859299 : 79.86758,
+    productionLatitude: 6.90413,
+    productionLongitude: 79.86758,
     referenceImage: "/assets/images/independence_hall.webp",
     verificationOptions: [
       {
@@ -128,6 +134,13 @@ export const sitesData = [
         description: "Match the multilingual museum sign and surrounding stonework. The reference stays in its original landscape orientation and spans the left and right edges.",
         image: "/assets/images/independence_option_3.jpg",
         fitAxis: "horizontal"
+      },
+      {
+        number: 4,
+        title: "Temporary Peacock Lantern Test",
+        description: "For field testing, match the peacock-shaped brass lantern within the camera guide.",
+        image: "/assets/images/independence_option_4_lantern.jpeg",
+        fitAxis: "vertical"
       }
     ],
     checkpoints: [
@@ -142,8 +155,28 @@ export const sitesData = [
     ],
     quizzes: [
       {
-        question: "In what year was Sri Lanka's Independence Memorial Hall constructed to mark independence?",
+        question: "In which year was Independence Memorial Hall completed?",
         options: ["1948", "1953", "1972", "1934"],
+        correctIndex: 1
+      },
+      {
+        question: "Which architectural tradition inspired Independence Memorial Hall?",
+        options: ["Kandyan architecture", "Dutch Baroque", "Gothic Revival", "Art Deco"],
+        correctIndex: 0
+      },
+      {
+        question: "What event does Independence Memorial Hall commemorate?",
+        options: ["Sri Lanka gaining independence", "The opening of Parliament", "The founding of Colombo", "The end of the Kandyan Kingdom"],
+        correctIndex: 0
+      },
+      {
+        question: "In which city is Independence Memorial Hall located?",
+        options: ["Colombo", "Kandy", "Galle", "Anuradhapura"],
+        correctIndex: 0
+      },
+      {
+        question: "Which animal is prominently represented by the carved statues around the memorial?",
+        options: ["Lion", "Elephant", "Peacock", "Swan"],
         correctIndex: 0
       }
     ]
@@ -1478,6 +1511,29 @@ export const sitesData = [
     latitude: 6.0267,
     longitude: 80.2167,
     referenceImage: "/Element%20Pictures/Galle%20Fort.jpg",
+    verificationOptions: [
+      {
+        number: 1,
+        title: "Galle Fort Old Gate",
+        description: "Match the historic arched gateway, coat of arms and upper windows within the camera guide.",
+        image: "/assets/images/galle_option_1.jpg",
+        fitAxis: "horizontal"
+      },
+      {
+        number: 2,
+        title: "Rampart Cannon",
+        description: "Match the cannon, carriage and seaward rampart view within the camera guide.",
+        image: "/assets/images/galle_option_2.jpg",
+        fitAxis: "vertical"
+      },
+      {
+        number: 3,
+        title: "Galle Lighthouse",
+        description: "Match the full white lighthouse, surrounding palms and rampart foreground within the camera guide.",
+        image: "/assets/images/galle_option_3.jpg",
+        fitAxis: "vertical"
+      }
+    ],
     checkpoints: [
       {
         id: "galle_lighthouse",
