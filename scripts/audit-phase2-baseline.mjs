@@ -42,8 +42,11 @@ for (const name of [
   if (count > 1) warnings.push(`${name}: ${count} implementations remain`);
 }
 
+if (/window\.showPhotoComparisonResult\s*=(?!=)|window\.analyzeLandmarkPhoto\s*=(?!=)/.test(app)) {
+  failures.push('guided camera: an active photo-comparison handler is still exposed');
+}
+requirePattern('guided camera completion handler', app, /window\.showPhotoGuideCompletionResult\s*=/);
 if (/immutable ledger|blockchain/i.test(app)) warnings.push('Legacy ledger wording remains for removal from production paths');
-if (/match confidence|Reference match below/i.test(app)) warnings.push('Finale image-score wording remains pending guided-camera migration');
 
 console.log('Phase 2 baseline audit');
 console.log(`Critical checks: ${failures.length === 0 ? 'PASS' : 'FAIL'}`);

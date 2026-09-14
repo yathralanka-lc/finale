@@ -1508,8 +1508,8 @@ export const sitesData = [
     openStatus: "Open now",
     description: "A coastal fortress built by the Portuguese and fortified by the Dutch, blending European military architecture and South Asian traditions.",
     image: "/Element%20Pictures/Galle%20Fort.jpg",
-    latitude: 6.0267,
-    longitude: 80.2167,
+    latitude: 6.0279875,
+    longitude: 80.2175781,
     referenceImage: "/Element%20Pictures/Galle%20Fort.jpg",
     verificationOptions: [
       {

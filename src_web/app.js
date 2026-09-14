@@ -2497,7 +2497,7 @@ const SITE_COORDINATES_MAP = {
   kandy_tooth: { lat: 7.2936, lng: 80.6414 },
   ruwanweliseya: { lat: 8.34998, lng: 80.3964 },
   mihintale: { lat: 8.3593, lng: 80.5103 },
-  galle_fort: { lat: 6.028624, lng: 80.216797 },
+  galle_fort: { lat: 6.0279875, lng: 80.2175781 },
   dambulla: { lat: 7.8567, lng: 80.6483 },
   dambulla_cave: { lat: 7.8567, lng: 80.6483 },
 
@@ -8263,7 +8263,7 @@ window.showQuizIntroduction = function (siteId) {
   document.body.appendChild(overlay);
 };
 
-window.launchInAppCamera = function (cpId) {
+const legacyLaunchInAppCamera = function (cpId) {
   if (typeof window.launchCameraARScanner === 'function') {
     window.launchCameraARScanner(window.state?.activeSite, 0);
   } else if (typeof window.verifySiteCheckpoint === 'function') {
@@ -8271,7 +8271,7 @@ window.launchInAppCamera = function (cpId) {
   }
 };
 
-window.startSiteVerificationFlow = function (siteId) {
+const legacyStartSiteVerificationFlow = function (siteId) {
   const pool = window.sitesData || (typeof sitesData !== 'undefined' ? sitesData : []);
   const rawList = Array.isArray(pool) ? pool : Object.values(pool);
   const site = rawList.find(s => s && (s.id === siteId || s.slug === siteId)) || window.state?.activeSite || rawList[0];
@@ -12774,7 +12774,7 @@ window.openTargetFramingView = async function (siteId = 'independence_memorial_h
       <button 
         onclick="document.getElementById('target-framing-screen').remove(); window.openPhotoMatchCamera('${site.id}', ${optionNum});" 
         style="width: 100%; background: #0B5A68; color: #FFFFFF; border: none; border-radius: 14px; padding: 15px; font-weight: 800; font-size: 14px; cursor: pointer; box-shadow: 0 4px 14px rgba(11, 90, 104, 0.3); margin-top: 10px;">
-        📷 Match with Camera
+        📷 Open Camera Guide
       </button>
     </div>
   `;
@@ -12930,7 +12930,7 @@ window.verificationHogSimilarity = function (leftLuma, rightLuma, width, height,
   return denominator > 0 ? Math.max(0, Math.min(1, dot / denominator)) : 0;
 };
 
-window.analyzeLandmarkPhoto = async function (video, referenceImageSrc, overlayImage) {
+const legacyAnalyzeLandmarkPhoto = async function (video, referenceImageSrc, overlayImage) {
   const previewWidth = Math.min(720, video.videoWidth || 720);
   const previewHeight = Math.max(1, Math.round(previewWidth * (video.videoHeight || 1280) / (video.videoWidth || 720)));
   const capturedCanvas = document.createElement('canvas');
@@ -13098,7 +13098,7 @@ window.openPhotoMatchCamera = async function (siteId = 'independence_memorial_ha
     <!-- Camera Bottom Action Area: Single Physical Circular Shutter Button ONLY -->
     <div style="position: absolute; bottom: 0; left: 0; right: 0; z-index: 10; padding: 20px 16px max(env(safe-area-inset-bottom), 30px) 16px; background: linear-gradient(0deg, rgba(0,0,0,0.85) 0%, transparent 100%); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;">
       <p style="color: #FFFFFF; font-size: 12px; margin: 0; text-shadow: 0 2px 4px rgba(0,0,0,0.8); font-weight: 600;">
-        Resize and align the guide. Only the area inside it is compared.
+        Resize and align the guide, then record your guided camera step.
       </p>
 
       <!-- Physical Circular Shutter Button -->
@@ -13290,28 +13290,13 @@ window.snapShutterAndVerify = async function (siteId = 'independence_memorial_ha
     return;
   }
 
-  const option = window.getLandmarkVerificationOption(site, optionNum);
   const shutter = document.getElementById('btn-shutter-snap');
   const instruction = shutter?.parentElement?.querySelector('p');
   if (shutter) {
     shutter.disabled = true;
     shutter.classList.add('is-analyzing');
   }
-  if (instruction) instruction.textContent = 'Comparing captured frame with the selected reference…';
-
-  let result;
-  try {
-    result = await window.analyzeLandmarkPhoto(video, option.image || site.image, document.getElementById('ghost-overlay-img'));
-  } catch (error) {
-    console.error('Photo comparison failed:', error);
-    if (shutter) {
-      shutter.disabled = false;
-      shutter.classList.remove('is-analyzing');
-    }
-    if (instruction) instruction.textContent = 'Comparison could not finish. Keep the camera steady and try again.';
-    window.showNotification?.('The photo comparison could not finish. Please try again.', 'error');
-    return;
-  }
+  if (instruction) instruction.textContent = 'Recording your guided camera step…';
 
   window._photoMatchCameraCleanup?.();
 
@@ -13342,33 +13327,27 @@ window.snapShutterAndVerify = async function (siteId = 'independence_memorial_ha
   const progress = window.state.siteProgress[cleanId];
   if (!progress.photoOptionResults) progress.photoOptionResults = {};
   progress.photoOptionResults[Number(optionNum)] = {
-    score: result.score,
-    passed: result.passed,
+    completed: true,
     attemptedAt: Date.now()
   };
   const alreadyPhotoVerified = Boolean(progress.photoVerified || localStorage.getItem('site_photo_verified_' + cleanId) === 'true');
   let xpAwarded = 0;
 
-  // Award photo XP only after the model reaches the required 75% threshold.
-  if (result.passed) {
-    if (!alreadyPhotoVerified && typeof window.awardLandmarkXP === 'function') {
-      window.awardLandmarkXP(cleanId, 'PHOTO');
-      xpAwarded = APP_RULES.xp.photo;
-    }
-    progress.photoVerified = true;
-    localStorage.setItem('site_photo_verified_' + cleanId, 'true');
+  if (!alreadyPhotoVerified && typeof window.awardLandmarkXP === 'function') {
+    window.awardLandmarkXP(cleanId, 'PHOTO');
+    xpAwarded = APP_RULES.xp.photo;
   }
+  progress.photoVerified = true;
+  localStorage.setItem('site_photo_verified_' + cleanId, 'true');
 
   try {
     localStorage.setItem(siteProgressKey, JSON.stringify(window.state.siteProgress));
   } catch (e) { }
 
-  if (result.passed) {
-    if (typeof window.recalculateTotalXP === 'function') window.recalculateTotalXP();
-    if (typeof saveUserProfile === 'function') saveUserProfile();
-  }
+  if (typeof window.recalculateTotalXP === 'function') window.recalculateTotalXP();
+  if (typeof saveUserProfile === 'function') saveUserProfile();
 
-  window.showPhotoComparisonResult(site, option, result, xpAwarded);
+  window.showPhotoGuideCompletionResult(site, window.getLandmarkVerificationOption(site, optionNum), xpAwarded);
 };
 
 window.returnToLandmarkVerificationOptions = function (siteId) {
@@ -13377,39 +13356,24 @@ window.returnToLandmarkVerificationOptions = function (siteId) {
   setTimeout(() => window.switchSiteDetailTab?.('verification'), 0);
 };
 
-window.showPhotoComparisonResult = function (site, option, result, xpAwarded = 0) {
+window.showPhotoGuideCompletionResult = function (site, option, xpAwarded = 0) {
   document.getElementById('photo-comparison-result')?.remove();
   const overlay = document.createElement('div');
   overlay.id = 'photo-comparison-result';
-  overlay.className = `photo-comparison-result ${result.passed ? 'is-passed' : 'is-rejected'}`;
-  const thresholdDifference = Math.abs(result.score - APP_RULES.verification.photoMatchPercent);
+  overlay.className = 'photo-comparison-result is-passed';
   const currentXP = Number(window.state?.user?.xp || window.state?.xp || 0);
   overlay.innerHTML = `
     <div class="photo-comparison-result-card" role="dialog" aria-modal="true" aria-labelledby="photo-result-title">
-      <div class="photo-result-status">${result.passed ? 'IMAGE VERIFICATION COMPLETE' : 'IMAGE VERIFICATION NOT COMPLETED'}</div>
-      <div class="photo-result-score-ring"><strong>${result.score}%</strong><span>match</span></div>
-      <h2 id="photo-result-title">${result.passed ? 'Reference match accepted' : `Reference match below ${APP_RULES.verification.photoMatchPercent}%`}</h2>
+      <div class="photo-result-status">GUIDED CAMERA STEP COMPLETE</div>
+      <div class="photo-result-score-ring"><strong>✓</strong><span>recorded</span></div>
+      <h2 id="photo-result-title">Guided camera step recorded</h2>
       <p class="photo-result-summary">
-        ${result.passed
-          ? `The captured image matched ${option.title} by ${result.score}%, which is ${thresholdDifference}% above the required score.`
-          : `The captured image matched ${option.title} by ${result.score}%, which is ${thresholdDifference}% below the required score. This does not prevent trying any other option.`}
+        You completed the guided camera step for ${option.title}. The camera frame was used only during this step and was not saved.
       </p>
-      <div class="photo-result-comparison">
-        <figure><img src="${result.referenceComparisonDataUrl || option.image}" alt="Visible reference area used for comparison"><figcaption>Reference area compared</figcaption></figure>
-        <figure><img src="${result.comparisonDataUrl || result.capturedDataUrl}" alt="Camera area used for comparison"><figcaption>Camera area compared</figcaption></figure>
-      </div>
-      <div class="photo-result-metrics" aria-label="Image comparison details">
-        <span><strong>${result.metrics.structure}%</strong> Structure</span>
-        <span><strong>${result.metrics.outline}%</strong> Outline</span>
-        <span><strong>${result.metrics.color}%</strong> Colour</span>
-        <span><strong>${result.metrics.framing}%</strong> Framing</span>
-      </div>
-      ${result.passed
-        ? `<div class="photo-result-xp">${xpAwarded ? `+${xpAwarded} XP added immediately · Total ${currentXP} XP` : `Photo XP already awarded · Total ${currentXP} XP`}</div>`
-        : '<div class="photo-result-guidance">Move closer to the silhouette, match its scale and edges, keep the phone steady, and use similar lighting.</div>'}
+      <div class="photo-result-xp">${xpAwarded ? `+${xpAwarded} XP recorded · Total ${currentXP} XP` : `Guided camera-step XP was already recorded · Total ${currentXP} XP`}</div>
       <div class="photo-result-actions">
-        <button type="button" id="retry-photo-option">${result.passed ? `Try ${option.title} Again` : 'Retry This Option'}</button>
-        <button type="button" id="choose-photo-option">Choose Another Option</button>
+        <button type="button" id="retry-photo-option">Try ${option.title} Again</button>
+        <button type="button" id="choose-photo-option">Return to Options</button>
       </div>
     </div>
   `;

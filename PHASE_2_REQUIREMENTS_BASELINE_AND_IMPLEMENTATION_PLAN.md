@@ -22,7 +22,7 @@ The immediate objective is a stable and truthful public experience that keeps ev
 
 All existing landmarks remain visible. Each location uses its original coordinate, a 500-metre verification radius, and one guided-camera verification option. The four priority locations require an approved description, a 50-question source-backed quiz bank, visitor information, Sources section, accessibility review, and field acceptance record.
 
-The Galle Dutch Fort coordinate must be researched at its main entrance and physically confirmed. The project owner will provide its camera-reference image when implementation reaches that task.
+The Galle Dutch Fort verification centre is project-owner approved at **6.0279875, 80.2175781** (Plus Code `26H9+52W`, Galle 80000). It retains the standard 500-metre radius. The project owner will provide its camera-reference image when implementation reaches that task.
 
 ### Included capabilities
 
@@ -236,6 +236,7 @@ Completed in the current Phase 2 working branch:
 - Removed the second startup state reset and the weaker duplicate active-user repository that could split session state.
 - Retained one authoritative landmark-opening handler and corrected its compatibility alias.
 - Quarantined the inactive legacy camera and immersion-timer implementations so production uses only the current handlers; the build now removes those dead paths.
+- Replaced the active image-score result with a guided-camera completion step. The live frame is used only while the guide is open, no match percentage is shown, and no captured frame is retained by that flow.
 - Derived rank definitions from the shared ranking scale instead of maintaining a second threshold list.
 - Centralized the active XP, quiz, geofence, GPS accuracy, GPS freshness, visit-duration, return-window, photo-threshold, and primary-navigation values.
 - Confirmed that the production build compiles after the consolidation.
@@ -243,7 +244,6 @@ Completed in the current Phase 2 working branch:
 Still required before Step 2.1 can be marked complete:
 
 - Delete the quarantined legacy source blocks and continue consolidating the remaining authentication and renderer prototypes during modular extraction.
-- Replace the finale image-score experience with the approved guided camera completion flow that does not claim automated recognition or retain the frame.
 - Hide or remove prototype donation, petition, commercial reward, sample leaderboard, and ledger claims from production routes.
 - Verify the remote account email template contains no 50 XP or welcome-bonus wording.
 - Add focused automated and device checks for guest isolation, authentication return, directory routing, GPS states, camera cleanup, quizzes, achievements, and rotation.
@@ -258,7 +258,7 @@ Design and deploy restrictive Firebase rules and trusted server operations for q
 
 ### Step 2.4: Four-location content
 
-Prepare source-backed review sheets and 50-question banks for the four priority sites. Correct Independence Memorial Hall date wording. Research and field-confirm the Galle Dutch Fort entrance coordinate. Request its camera image from the project owner at this step.
+Prepare source-backed review sheets and 50-question banks for the four priority sites. Correct Independence Memorial Hall date wording. Use the approved Galle Dutch Fort verification centre at 6.0279875, 80.2175781 and complete its field acceptance record. Request its camera image from the project owner at this step.
 
 ### Step 2.5: Core journey completion
 
