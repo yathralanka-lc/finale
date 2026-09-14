@@ -2357,7 +2357,8 @@ window.getShortSiteName = function (site) {
   const name = typeof site === 'string' ? site : (site.name || site.id || '');
   const id = String(site.id || name).toLowerCase().replace(/[^a-z0-9]/g, '');
 
-  if (id.includes('museum') || id.includes('colombo')) return 'Museum';
+  if (id.includes('ladiescollege')) return 'Ladies\' College';
+  if (id.includes('museum')) return 'Museum';
   if (id.includes('sigiriya')) return 'Sigiriya';
   if (id.includes('tooth') || id.includes('kandy')) return 'Tooth Relic';
   if (id.includes('ruwanweli')) return 'Ruwanweliseya';
