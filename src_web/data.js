@@ -681,6 +681,13 @@ export const sitesData = [
         description: "Match the red gates and the College crest at the centre of the gate. Keep the original landscape reference aligned to the gate details.",
         image: "/assets/images/ladies_college_option_3.jpg",
         fitAxis: "horizontal"
+      },
+      {
+        number: 4,
+        title: "Lantern",
+        description: "Match the lantern within the camera guide.",
+        image: "/assets/images/independence_option_4_lantern.jpeg",
+        fitAxis: "vertical"
       }
     ],
     checkpoints: [

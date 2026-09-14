@@ -1518,8 +1518,8 @@ window.renderPendingVerificationPopup = function (fullName, email) {
       </p>
 
       <div style="background: #FEF3C7; border: 1.5px solid #F59E0B; border-radius: 14px; padding: 12px 14px; margin-bottom: 18px; text-align: left; font-size: 11.5px; color: #92400E; line-height: 1.45;">
-        🎁 <strong>Explorer Account Active!</strong><br>
-        Your explorer profile is initialized. Begin exploring Sri Lanka's heritage sanctuaries directly.
+        <strong>Explorer Account Active</strong><br>
+        A Heritage Quest guides you through a landmark visit: verify your location, complete a checkpoint photo, and take a short knowledge quiz.
       </div>
 
       <div style="display: flex; flex-direction: column; gap: 8px;">
@@ -1814,14 +1814,14 @@ window.renderWelcomeModal = function ({ name, email, isGoogleUser }) {
           Ayubowan, ${name || 'Explorer'}! 🌿
         </h3>
         <p style="margin: 0 0 20px 0; font-size: 13px; color: #4A3E2C; line-height: 1.55;">
-          Welcome to YathraLanka. You have joined our expedition to explore, document, and protect Sri Lanka’s cultural treasures.
+          Welcome to YathraLanka. Explore Sri Lanka’s cultural places through simple Heritage Quests: visit a landmark, verify your location, complete a checkpoint photo, and finish a short knowledge quiz.
         </p>
         <div style="background: #F0FDF4; border: 1.5px solid #86EFAC; border-radius: 14px; padding: 14px 16px; margin-bottom: 24px;">
           <div style="font-size: 14.5px; font-weight: 800; color: #166534; margin-bottom: 2px;">
             Your explorer account is ready
           </div>
           <div style="font-size: 11.5px; font-weight: 600; color: #15803D; line-height: 1.4;">
-            Complete verified heritage activities to earn XP and achievements.
+            Each completed step records your progress and can earn XP and achievements.
           </div>
         </div>
         <button id="btn-enter-yathralanka" style="width: 100%; background-color: #EAA335; color: #182226; font-size: 14.5px; font-weight: 800; border: 1px solid #F6BE68; padding: 15px 20px; border-radius: 12px; cursor: pointer; box-shadow: 0 6px 18px rgba(234, 163, 53, 0.42);">
@@ -7941,14 +7941,26 @@ const quizAttemptStore = createQuizAttemptStore({
 window.getQuizLockStatus = (siteId = window.state?.activeSite?.id) => quizAttemptStore.lockStatus(siteId);
 window.recordQuizResult = (siteId, scorePercent) => quizAttemptStore.recordResult(siteId, scorePercent);
 
+window.showQuizLockNotice = function (siteId, remainingMinutes) {
+  document.getElementById('quiz-lock-notice')?.remove();
+  const site = (window.sitesData || []).find(item => item.id === siteId) || window.state?.activeSite;
+  const notice = document.createElement('div');
+  notice.id = 'quiz-lock-notice';
+  notice.style.cssText = 'position:fixed; inset:0; z-index:100000; display:flex; align-items:center; justify-content:center; padding:20px; background:rgba(6,38,45,.72); box-sizing:border-box;';
+  notice.innerHTML = `
+    <div role="dialog" aria-modal="true" style="width:100%; max-width:340px; background:#FFFFFF; border-radius:20px; padding:24px 20px; text-align:center; box-shadow:0 20px 50px rgba(0,0,0,.30);">
+      <h3 style="margin:0 0 8px; color:#125463; font-size:18px; font-weight:800;">Quiz temporarily paused</h3>
+      <p style="margin:0 0 18px; color:#475569; font-size:13px; line-height:1.5;">You can retry this quiz in <strong>${remainingMinutes} minute${remainingMinutes === 1 ? '' : 's'}</strong>. Your previous progress is safely saved.</p>
+      <button type="button" onclick="document.getElementById('quiz-lock-notice')?.remove(); window.returnToSiteOverview('${siteId}')" style="width:100%; margin-bottom:8px; padding:12px; border:0; border-radius:12px; background:#0C6C7A; color:#FFFFFF; font-size:13px; font-weight:800; cursor:pointer;">Return to ${site?.name || 'landmark'}</button>
+      <button type="button" onclick="document.getElementById('quiz-lock-notice')?.remove()" style="width:100%; padding:10px; border:0; background:transparent; color:#125463; font-size:13px; font-weight:800; cursor:pointer;">Try again later</button>
+    </div>`;
+  document.body.appendChild(notice);
+};
+
 window.handleQuizButtonClick = function (siteId) {
   const lock = window.getQuizLockStatus(siteId);
   if (lock && lock.isLocked) {
-    if (typeof window.showNotification === 'function') {
-      window.showNotification(`This landmark quiz is temporarily locked. Available in ${lock.remainingMinutes} min.`, 'info');
-    } else {
-      alert(`This landmark quiz is temporarily locked. Available in ${lock.remainingMinutes} min.`);
-    }
+    window.showQuizLockNotice(siteId, lock.remainingMinutes);
     return;
   }
 
@@ -8613,6 +8625,11 @@ function renderSiteDetail(site = window.state?.activeSite) {
         </button>
       `;
     }).join('');
+    const nextStep = !locationVerified
+      ? { number: '1', title: 'Verify your location', detail: 'Visit the landmark and confirm your location to begin the Heritage Quest.', action: "window.switchSiteDetailTab('verification')", button: 'Open verification' }
+      : !photoVerified
+      ? { number: '2', title: 'Complete a checkpoint photo', detail: 'Use a reference image at the landmark to complete the next part of your Heritage Quest.', action: "window.switchSiteDetailTab('verification')", button: 'Open checkpoints' }
+      : { number: '3', title: 'Complete the knowledge quiz', detail: 'Finish the learning step to record your landmark progress and earn quiz XP.', action: `window.handleQuizButtonClick('${site.id}')`, button: 'Open quiz' };
 
     return `
       <div class="screen site-detail-screen" style="position: relative; height: 100%; display: flex; flex-direction: column; overflow: hidden; background: #F8F7F2;">
@@ -8665,6 +8682,12 @@ function renderSiteDetail(site = window.state?.activeSite) {
               </div>
             </div>
           ` : ''}
+
+          <div style="background:#FFFFFF; border:1.5px solid #E2E8F0; border-radius:16px; padding:14px; margin-bottom:14px; box-shadow:0 2px 8px rgba(0,0,0,.03);">
+            <div style="font-size:13.5px; font-weight:800; color:#125463; margin-bottom:5px;">How YathraLanka works</div>
+            <p style="margin:0 0 10px; font-size:11.5px; line-height:1.5; color:#64748B;">A Heritage Quest is a guided activity at a landmark. Visit the place, verify your location, complete a checkpoint photo, then take the short quiz to record your journey.</p>
+            <button type="button" onclick="window.handleDashboardInteraction('directory', { category: 'Heritage Trail' })" style="background:transparent; border:0; padding:0; color:#0C6C7A; font-size:12px; font-weight:800; cursor:pointer;">Choose a landmark</button>
+          </div>
           
           <!-- TAB 1: OVERVIEW & QUIZ -->
           <div id="site-tab-panel-overview" style="display: ${activeTab === 'overview' ? 'block' : 'none'};">
@@ -8684,6 +8707,15 @@ function renderSiteDetail(site = window.state?.activeSite) {
               <p style="font-size: 12px; color: #475569; line-height: 1.5; margin: 0;">${siteDescription}</p>
             </div>
 
+            <div style="background:#FEF9EE; border:1.5px solid #F6E7C1; border-radius:16px; padding:13px 14px; margin-bottom:12px;">
+              <div style="display:flex; align-items:center; gap:9px; margin-bottom:5px;">
+                <span style="display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; border-radius:50%; background:#0C6C7A; color:#FFFFFF; font-size:12px; font-weight:800;">${nextStep.number}</span>
+                <strong style="font-size:13px; color:#125463;">Next step: ${nextStep.title}</strong>
+              </div>
+              <p style="margin:0 0 10px; font-size:11.5px; color:#64748B; line-height:1.45;">${nextStep.detail}</p>
+              <button type="button" onclick="${nextStep.action}" style="width:100%; padding:10px; border:0; border-radius:10px; background:#0C6C7A; color:#FFFFFF; font-size:12px; font-weight:800; cursor:pointer;">${nextStep.button}</button>
+            </div>
+
             <!-- Knowledge Quiz Button -->
             <button 
               class="yl-site-quiz-button"
@@ -8692,11 +8724,11 @@ function renderSiteDetail(site = window.state?.activeSite) {
               <div style="display: flex; align-items: center; gap: 10px;">
                 <div style="text-align: left;">
                   <div style="font-size: 13.5px; font-weight: 800; color: #125463;">Knowledge Quiz</div>
-                  <div style="font-size: 11px; color: #64748B;">Test your archaeological knowledge</div>
+                  <div style="font-size: 11px; color: #64748B;">Finish this learning step for your Heritage Quest</div>
                 </div>
               </div>
               ${quizLock.isLocked
-                ? `<span style="font-size: 10.5px; font-weight: 700; color: #DC2626; background: #FEF2F2; padding: 4px 8px; border-radius: 6px;">Locked (${quizLock.remainingMinutes}m)</span>`
+                ? `<span style="font-size: 10.5px; font-weight: 700; color: #DC2626; background: #FEF2F2; padding: 4px 8px; border-radius: 6px;">Retry in ${quizLock.remainingMinutes}m</span>`
                 : `<span style="font-size: 12px; font-weight: 800; color: #0C6C7A;">Start</span>`
               }
             </button>
@@ -9195,9 +9227,9 @@ window.initSiteQuizSession = function (siteId) {
   const lock = typeof window.getQuizLockStatus === 'function' ? window.getQuizLockStatus(siteId) : { isLocked: false };
   if (lock.isLocked) {
     if (typeof window.showNotification === 'function') {
-      window.showNotification(`This landmark quiz is locked. Available in ${lock.remainingMinutes} minutes.`, "info");
+      window.showQuizLockNotice(siteId, lock.remainingMinutes);
     } else {
-      alert(`This landmark quiz is locked. Available in ${lock.remainingMinutes} minutes.`);
+      window.showQuizLockNotice(siteId, lock.remainingMinutes);
     }
     return;
   }
@@ -9216,6 +9248,16 @@ window.initSiteQuizSession = function (siteId) {
   };
 
   window.navigate('quiz');
+};
+
+window.restartQuizSession = function (siteId = window.state?.activeQuizSession?.siteId) {
+  const session = window.state?.activeQuizSession;
+  if (session?.timerId) clearInterval(session.timerId);
+  if (!siteId) {
+    window.showNotification?.('We could not restart this quiz. Return to the landmark and try again.', 'error');
+    return;
+  }
+  window.initSiteQuizSession(siteId);
 };
 
 function renderQuiz() {
@@ -9313,6 +9355,7 @@ function renderQuiz() {
           style="width: 100%; background: #0C6C7A; color: #FFFFFF; border: none; border-radius: 12px; padding: 13px; font-size: 13.5px; font-weight: 800; cursor: pointer; box-shadow: 0 4px 12px rgba(12,108,122,0.25);">
           ${qNum === session.questions.length ? 'Complete Quiz' : 'Next Question'}
         </button>
+        <button type="button" onclick="window.restartQuizSession('${session.siteId}')" style="width:100%; margin-top:10px; padding:10px; border:1.5px solid #0C6C7A; border-radius:12px; background:#FFFFFF; color:#0C6C7A; font-size:12.5px; font-weight:800; cursor:pointer;">Restart quiz</button>
 
       </div>
     </div>
@@ -9350,6 +9393,10 @@ window.confirmAndAdvanceQuiz = function () {
   if (session.timerId) clearInterval(session.timerId);
 
   const currentQ = session.questions[session.currentIndex];
+  if (!currentQ) {
+    window.finalizeQuizSession();
+    return;
+  }
   if (session.selectedOptionIndex === currentQ.correctIndex) {
     session.score++;
   }
@@ -9360,16 +9407,29 @@ window.confirmAndAdvanceQuiz = function () {
     if (btnIndex === currentQ.correctIndex) btn.classList.add('correct');
     if (btnIndex === session.selectedOptionIndex && btnIndex !== currentQ.correctIndex) btn.classList.add('incorrect');
   });
+  const advanceButton = document.getElementById('btn-next-question');
+  if (advanceButton) {
+    advanceButton.disabled = true;
+    advanceButton.textContent = session.currentIndex + 1 < session.questions.length ? 'Saving answer...' : 'Completing quiz...';
+  }
 
   setTimeout(() => {
-    if (session.currentIndex + 1 < session.questions.length) {
-      session.currentIndex++;
-      const chassis = document.getElementById('screen-viewport');
-      if (chassis) {
-        chassis.innerHTML = renderQuiz();
+    try {
+      if (session.currentIndex + 1 < session.questions.length) {
+        session.currentIndex++;
+        const chassis = document.getElementById('screen-viewport');
+        if (chassis) {
+          chassis.innerHTML = renderQuiz();
+        } else {
+          window.showNotification?.('Your answer was saved. Please return to the quiz to continue.', 'info');
+        }
+      } else {
+        window.finalizeQuizSession();
       }
-    } else {
-      window.finalizeQuizSession();
+    } catch (error) {
+      console.error('Quiz progress recovery error:', error);
+      session.isAdvancing = false;
+      window.showNotification?.('We could not continue the quiz. Use Restart quiz to begin again.', 'error');
     }
   }, 450);
 };
@@ -9448,7 +9508,7 @@ window.finalizeQuizSession = function () {
           </p>
 
           ${!passed && !attemptResult.isLocked ? `
-            <button type="button" onclick="window.initSiteQuizSession('${siteId}')" class="yl-btn-secondary" style="width:100%; max-width:320px; margin-bottom:10px; padding:13px; border-radius:12px; font-weight:800;">Try Again</button>
+            <button type="button" onclick="window.restartQuizSession('${siteId}')" class="yl-btn-secondary" style="width:100%; max-width:320px; margin-bottom:10px; padding:13px; border-radius:12px; font-weight:800;">Restart Quiz</button>
           ` : ''}
 
           <!-- Dynamic Return Button: Return to {name of the site} -->
