@@ -109,15 +109,47 @@ window.enterMap = function (params = {}) {
 };
 
 // ============================================================================
-// STABILIZATION STEP 6A: CENTRALIZED AUTHORITATIVE RANK SYSTEM
+// PHASE 2: CENTRALIZED AUTHORITATIVE PRODUCT RULES
 // ============================================================================
-const RANK_DEFINITIONS = [
-  { id: 'novice-explorer', name: 'Novice Explorer', minXP: 0, maxXP: 999 },
-  { id: 'pathfinder', name: 'Pathfinder', minXP: 1000, maxXP: 2499 },
-  { id: 'heritage-seeker', name: 'Heritage Seeker', minXP: 2500, maxXP: 4999 },
-  { id: 'cultural-guardian', name: 'Cultural Guardian', minXP: 5000, maxXP: 9999 },
-  { id: 'legacy-ambassador', name: 'Legacy Ambassador', minXP: 10000, maxXP: null }
-];
+const APP_RULES = Object.freeze({
+  xp: Object.freeze({
+    starting: 0,
+    location: 100,
+    photo: 70,
+    quiz: 50,
+    landmarkTotal: 220
+  }),
+  quiz: Object.freeze({
+    questionsPerSession: 5,
+    secondsPerQuestion: 30,
+    maxAttempts: 3,
+    cooldownMs: 30 * 60 * 1000,
+    masteryPercent: 100
+  }),
+  verification: Object.freeze({
+    radiusMeters: 500,
+    maxAccuracyMeters: 200,
+    locationFreshMs: 60 * 1000,
+    defaultVisitMs: 15 * 60 * 1000,
+    bmichVisitMs: 3 * 60 * 1000,
+    outsideResumeWindowMs: 60 * 60 * 1000,
+    photoMatchPercent: 75
+  }),
+  navigation: Object.freeze([
+    Object.freeze({ id: 'home', label: 'Home' }),
+    Object.freeze({ id: 'activism', label: 'Activism' }),
+    Object.freeze({ id: 'rewards', label: 'Achievements' }),
+    Object.freeze({ id: 'profile', label: 'Profile' })
+  ])
+});
+window.APP_RULES = APP_RULES;
+
+const RANK_DEFINITIONS = rankingScale.map(item => ({
+  id: String(item.rank || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, ''),
+  name: item.rank,
+  minXP: item.threshold,
+  maxXP: item.range?.[1] ?? null
+}));
 window.RANK_DEFINITIONS = RANK_DEFINITIONS;
 
 function getRankProgress(totalXP) {
@@ -2576,15 +2608,15 @@ window.recalculateTotalXP = function () {
   let completionBonus = 0;
   Object.values(completedSites).forEach(siteData => {
     if (typeof siteData === 'object' && siteData !== null) {
-      if (siteData.gps || siteData.gpsVerified) completionBonus += 100;
-      if (siteData.photo || siteData.photoVerified) completionBonus += 70;
-      if (siteData.quiz || siteData.quizPassed) completionBonus += 50;
+      if (siteData.gps || siteData.gpsVerified) completionBonus += APP_RULES.xp.location;
+      if (siteData.photo || siteData.photoVerified) completionBonus += APP_RULES.xp.photo;
+      if (siteData.quiz || siteData.quizPassed) completionBonus += APP_RULES.xp.quiz;
     } else if (siteData) {
-      completionBonus += 100;
+      completionBonus += APP_RULES.xp.location;
     }
   });
 
-  const totalCalculatedXP = Math.max(baseXP, 50 + completionBonus);
+  const totalCalculatedXP = Math.max(APP_RULES.xp.starting, baseXP, completionBonus);
 
   if (window.state.user) {
     window.state.user.xp = totalCalculatedXP;
@@ -2633,24 +2665,24 @@ window.awardLandmarkXP = function (siteId, phase) {
 
   if (phase === 'GPS' && !prog.gpsVerified) {
     prog.gpsVerified = true;
-    prog.gpsXP = 100;
-    xpAwarded = 100;
-    message = `📍 GPS Geofence Arrival verified! +100 XP awarded.`;
+    prog.gpsXP = APP_RULES.xp.location;
+    xpAwarded = APP_RULES.xp.location;
+    message = `📍 GPS Geofence Arrival verified! +${APP_RULES.xp.location} XP awarded.`;
   } else if (phase === 'PHOTO' && !prog.photoVerified) {
     prog.photoVerified = true;
-    prog.photoXP = 70;
-    xpAwarded = 70;
-    message = `📸 Photo Verification submitted! +70 XP awarded.`;
+    prog.photoXP = APP_RULES.xp.photo;
+    xpAwarded = APP_RULES.xp.photo;
+    message = `📸 Photo Verification submitted! +${APP_RULES.xp.photo} XP awarded.`;
   } else if (phase === 'QUIZ' && !prog.quizPassed) {
     prog.quizPassed = true;
-    prog.quizXP = 50;
-    xpAwarded = 50;
-    message = `🧠 Heritage Lore Quiz passed! +50 XP awarded.`;
+    prog.quizXP = APP_RULES.xp.quiz;
+    xpAwarded = APP_RULES.xp.quiz;
+    message = `🧠 Heritage Lore Quiz passed! +${APP_RULES.xp.quiz} XP awarded.`;
   }
 
   if (xpAwarded > 0) {
     const currentTotal = prog.totalXP || 0;
-    const newTotal = Math.min(220, currentTotal + xpAwarded);
+    const newTotal = Math.min(APP_RULES.xp.landmarkTotal, currentTotal + xpAwarded);
     const actualGained = newTotal - currentTotal;
     prog.totalXP = newTotal;
 
@@ -2958,30 +2990,6 @@ window.showVerificationModal = function (site, xpEarned, title, message) {
   };
 };
 
-// Universal Site Detail Opener (Delegates to authoritative definition at line 3411)
-window.selectAndOpenSite = function (siteId) {
-  if (typeof window.isProductionSite === 'function' && !window.isProductionSite(siteId)) return;
-  if (typeof window.executeAppNavigation === 'function') {
-    return window.executeAppNavigation('site-detail', { id: siteId });
-  }
-};
-window.openSiteById = window.selectAndOpenSite;
-
-window.openSiteById = window.selectAndOpenSite;
-
-// Card Event Attacher Function
-window.attachDirectoryCardEvents = function () {
-  const cards = document.querySelectorAll('.heritage-card, .site-card-item, .directory-card, [data-site-id]');
-  cards.forEach(card => {
-    card.onclick = function (e) {
-      e.preventDefault();
-      e.stopPropagation();
-      const id = card.getAttribute('data-site-id') || card.getAttribute('data-id') || card.dataset?.siteId;
-      if (id) window.selectAndOpenSite(id);
-    };
-  });
-};
-
 function initWelcomeAppGate() {
   if (window.state) {
     window.state.currentScreen = 'welcome';
@@ -3073,7 +3081,7 @@ function recordVerificationLedgerEvent(site, userLat, userLng, distanceMeters, v
 
 // Global reference for location intervals
 let backgroundLocationInterval = null;
-const GEOFENCE_RADIUS_METERS = 500;
+const GEOFENCE_RADIUS_METERS = APP_RULES.verification.radiusMeters;
 const POLLING_INTERVAL_MS = 120000; // 2 minutes interval polling
 const DRIFT_GRACE_LIMIT_MS = 180000; // 3 minutes structural grace period
 
@@ -3215,76 +3223,6 @@ window.continueAsGuest = async function (e) {
     window.__isEnteringGuestMode = false;
   }
 };
-
-// 3. Dual-Tab Switcher within the Auth Screen (Smooth Slider, Zero Geometry Jumps & Zero Bleed)
-window.switchAuthSlider = function (targetTab) {
-  if (!window.state) window.state = {};
-  if (typeof state !== 'undefined') {
-    state.authActiveTab = targetTab === 'signup' ? 'signup' : 'signin';
-  }
-  window.state.authActiveTab = targetTab === 'signup' ? 'signup' : 'signin';
-
-  const track = document.getElementById('auth-sliding-track');
-  const panelSignIn = document.getElementById('panel-auth-signin');
-  const panelSignUp = document.getElementById('panel-auth-signup');
-  const btnSignIn = document.getElementById('tab-btn-signin');
-  const btnSignUp = document.getElementById('tab-btn-signup');
-  const footerText = document.getElementById('auth-footer-text');
-  const footerLink = document.getElementById('auth-footer-link');
-
-  if (targetTab === 'signup') {
-    if (track) track.style.transform = 'translateX(-50%)';
-    if (panelSignIn) {
-      panelSignIn.style.opacity = '0';
-      panelSignIn.style.pointerEvents = 'none';
-    }
-    if (panelSignUp) {
-      panelSignUp.style.opacity = '1';
-      panelSignUp.style.pointerEvents = 'auto';
-    }
-    if (btnSignIn) {
-      btnSignIn.style.background = 'transparent';
-      btnSignIn.style.color = 'rgba(255,255,255,0.85)';
-      btnSignIn.style.boxShadow = 'none';
-    }
-    if (btnSignUp) {
-      btnSignUp.style.background = '#FFFFFF';
-      btnSignUp.style.color = '#0B5A68';
-      btnSignUp.style.boxShadow = '0 2px 8px rgba(0,0,0,0.12)';
-    }
-    if (footerText) footerText.textContent = "Already have an account?";
-    if (footerLink) {
-      footerLink.textContent = "Sign In";
-      footerLink.setAttribute('onclick', "window.switchAuthSlider('signin')");
-    }
-  } else {
-    if (track) track.style.transform = 'translateX(0%)';
-    if (panelSignIn) {
-      panelSignIn.style.opacity = '1';
-      panelSignIn.style.pointerEvents = 'auto';
-    }
-    if (panelSignUp) {
-      panelSignUp.style.opacity = '0';
-      panelSignUp.style.pointerEvents = 'none';
-    }
-    if (btnSignIn) {
-      btnSignIn.style.background = '#FFFFFF';
-      btnSignIn.style.color = '#0B5A68';
-      btnSignIn.style.boxShadow = '0 2px 8px rgba(0,0,0,0.12)';
-    }
-    if (btnSignUp) {
-      btnSignUp.style.background = 'transparent';
-      btnSignUp.style.color = 'rgba(255,255,255,0.85)';
-      btnSignUp.style.boxShadow = 'none';
-    }
-    if (footerText) footerText.textContent = "Don't have an account?";
-    if (footerLink) {
-      footerLink.textContent = "Sign Up";
-      footerLink.setAttribute('onclick', "window.switchAuthSlider('signup')");
-    }
-  }
-};
-window.switchAuthTab = window.switchAuthSlider;
 
 // Password Visibility Toggle
 window.togglePasswordVisibility = function (inputId, buttonEl) {
@@ -3496,14 +3434,7 @@ function createNewUserSchema({ name, email, avatar = null, provider = 'email', p
         actionType: "ACCOUNT_CREATED",
         screen: "auth",
         meta: { provider: provider },
-        xpEarned: 50
-      },
-      {
-        timestamp: now,
-        actionType: "WELCOME_BONUS_AWARDED",
-        screen: "home",
-        meta: { bonusXP: 50 },
-        xpEarned: 50
+        xpEarned: APP_RULES.xp.starting
       }
     ]
   };
@@ -3711,25 +3642,6 @@ window.initApp = initApp;
 // 1. STATE & AUTH REPOSITORY
 // ============================================================================
 
-window.state = {
-  currentScreen: 'welcome',
-  currentParams: {},
-  authActiveTab: 'signin',
-  authOrigin: null // null when coming from Welcome; screen name when from inner guest
-};
-
-window.getActiveUser = function () {
-  try {
-    const raw = localStorage.getItem(ACTIVE_USER_KEY);
-    if (raw) return JSON.parse(raw);
-  } catch (e) { }
-  return { name: "Guest Explorer", isGuest: true, xp: 0, level: "Novice Explorer" };
-};
-
-window.setActiveUser = function (user) {
-  localStorage.setItem(ACTIVE_USER_KEY, JSON.stringify(user));
-};
-
 // ============================================================================
 // 2. NAVIGATION & ROUTER
 // ============================================================================
@@ -3755,11 +3667,6 @@ window.openAuthAsGuest = function (fromScreen = 'home') {
 
 // Handle Guest Flow: Bypass Auth and go straight to Home (delegates to primary continueAsGuest handler)
 // window.continueAsGuest is defined above as the single canonical guest handler
-
-window.handleAuthBackClick = function () {
-  const destination = window.state.authOrigin || 'home';
-  window.navigate(destination, window.state.currentParams || {});
-};
 
 // ============================================================================
 // PROFILE SCREEN RENDERER (Supports Verified Users & Clean Sign Out)
@@ -4522,6 +4429,7 @@ window.selectAndOpenSite = function (siteId) {
   window.state.selectedSite = site;
   window.openLandmarkDetail(site.id);
 };
+window.openSiteById = window.selectAndOpenSite;
 
 // Flush queued navigation if an early route triggered it
 if (pendingNavigation) {
@@ -5974,24 +5882,6 @@ window.submitFirebasePasswordReset = async function (e) {
 window.submitPasswordReset = window.submitFirebasePasswordReset;
 
 // ============================================================================
-// 3. RESTORE AUTH SCREEN (SCREEN 002A)
-// ============================================================================
-window.restoreAuthTabs = function () {
-  const tabPill = document.querySelector('.auth-tab-pill');
-  if (tabPill) tabPill.style.display = 'flex';
-
-  if (typeof window.renderAuthScreen === 'function') {
-    window.renderAuthScreen('signin');
-  } else if (typeof window.setAuthTab === 'function') {
-    window.setAuthTab('signin');
-  } else if (typeof window.navigate === 'function') {
-    window.state = window.state || {};
-    window.state.authActiveTab = 'signin';
-    window.navigate('auth');
-  }
-};
-
-// ============================================================================
 // 4. GUARD EXISTING USERS: NO WELCOME MODAL & NO DUPLICATE XP BONUS
 // ============================================================================
 window.handleExistingUserLogin = function (userRecord) {
@@ -6822,9 +6712,9 @@ function showLocationPermissionModal() {
 let yathraMapInstance = null;
 let userCoordinates = null;
 let locationPermissionDenied = false;
-window.VERIFICATION_RADIUS_METERS = 500;
-window.VERIFICATION_MAX_ACCURACY_METERS = 200;
-window.VERIFICATION_LOCATION_FRESH_MS = 60 * 1000;
+window.VERIFICATION_RADIUS_METERS = APP_RULES.verification.radiusMeters;
+window.VERIFICATION_MAX_ACCURACY_METERS = APP_RULES.verification.maxAccuracyMeters;
+window.VERIFICATION_LOCATION_FRESH_MS = APP_RULES.verification.locationFreshMs;
 
 function isValidLocationCoordinatePair(position) {
   if (!position) return false;
@@ -8325,13 +8215,13 @@ window.recordQuizResult = function (siteId, scorePercent) {
   localStorage.setItem(`yathra_quiz_attempts_${cleanId}`, String(attempts));
 
   // A perfect score or three attempts pauses only this landmark's quiz.
-  if (scorePercent === 100 || attempts >= 3) {
-    const lockDurationMs = 30 * 60 * 1000;
+  if (scorePercent === APP_RULES.quiz.masteryPercent || attempts >= APP_RULES.quiz.maxAttempts) {
+    const lockDurationMs = APP_RULES.quiz.cooldownMs;
     localStorage.setItem(`yathra_quiz_locked_until_${cleanId}`, String(Date.now() + lockDurationMs));
     localStorage.removeItem(`yathra_quiz_attempts_${cleanId}`);
     return { attemptsUsed: attempts, attemptsRemaining: 0, isLocked: true };
   }
-  return { attemptsUsed: attempts, attemptsRemaining: Math.max(0, 3 - attempts), isLocked: false };
+  return { attemptsUsed: attempts, attemptsRemaining: Math.max(0, APP_RULES.quiz.maxAttempts - attempts), isLocked: false };
 };
 
 window.handleQuizButtonClick = function (siteId) {
@@ -8359,12 +8249,12 @@ window.showQuizIntroduction = function (siteId) {
     <div class="quiz-introduction-card" role="dialog" aria-modal="true">
       <div class="quiz-introduction-icon">?</div>
       <h3>${site?.name || 'Landmark'} Knowledge Quiz</h3>
-      <p>You will receive 5 questions selected only from this landmark's question bank.</p>
+      <p>You will receive ${APP_RULES.quiz.questionsPerSession} questions selected only from this landmark's question bank.</p>
       <ul>
-        <li>30 seconds are allowed for each question.</li>
+        <li>${APP_RULES.quiz.secondsPerQuestion} seconds are allowed for each question.</li>
         <li>You may change an answer before selecting Next.</li>
-        <li>A perfect score earns 50 XP.</li>
-        <li>After a perfect score or three attempts, only this landmark's quiz pauses for 30 minutes.</li>
+        <li>A perfect score earns ${APP_RULES.xp.quiz} XP.</li>
+        <li>After a perfect score or ${APP_RULES.quiz.maxAttempts} attempts, only this landmark's quiz pauses for ${Math.round(APP_RULES.quiz.cooldownMs / 60000)} minutes.</li>
       </ul>
       <button class="is-primary" onclick="document.getElementById('quiz-introduction-overlay')?.remove(); window.initSiteQuizSession('${siteId}')">Begin Quiz</button>
       <button onclick="document.getElementById('quiz-introduction-overlay')?.remove()">Not Now</button>
@@ -8433,7 +8323,7 @@ window.startSiteVerificationFlow = function (siteId) {
 // ============================================================================
 
 // Step B: Target Specimen View
-window.openTargetFramingView = function (siteId, optionNum) {
+const legacyOpenTargetFramingView = function (siteId, optionNum) {
   const pool = window.sitesData || (typeof sitesData !== 'undefined' ? sitesData : []);
   const rawList = Array.isArray(pool) ? pool : Object.values(pool);
   const site = rawList.find(s => s && (s.id === siteId || s.slug === siteId)) || window.state?.activeSite || { name: 'Independence Memorial Hall', id: 'independence_memorial_hall' };
@@ -8502,7 +8392,7 @@ window.openTargetFramingView = function (siteId, optionNum) {
     <!-- Action Button to Open Live Viewfinder -->
     <div>
       <button 
-        onclick="document.getElementById('target-specimen-modal').remove(); window.openLiveGhostCamera('${site.id}', ${optionNum}, '${refImageSrc}')"
+        onclick="document.getElementById('target-specimen-modal').remove(); legacyOpenLiveGhostCamera('${site.id}', ${optionNum}, '${refImageSrc}')"
         style="width: 100%; background: #10B981; color: #FFFFFF; font-size: 15px; font-weight: 800; border: none; padding: 16px; border-radius: 14px; cursor: pointer; box-shadow: 0 4px 20px rgba(16,185,129,0.4);">
         📸 Open Camera & Align Frame
       </button>
@@ -8513,7 +8403,7 @@ window.openTargetFramingView = function (siteId, optionNum) {
 };
 
 // Step C & D: Live Viewfinder with Translucent Ghost Overlay & Physical Capture
-window.openLiveGhostCamera = function (siteId, optionNum, refImageSrc) {
+const legacyOpenLiveGhostCamera = function (siteId, optionNum, refImageSrc) {
   const pool = window.sitesData || (typeof sitesData !== 'undefined' ? sitesData : []);
   const rawList = Array.isArray(pool) ? pool : Object.values(pool);
   const site = rawList.find(s => s && (s.id === siteId || s.slug === siteId)) || window.state?.activeSite || { name: 'Independence Memorial Hall', id: 'independence_memorial_hall' };
@@ -8659,12 +8549,12 @@ window.openLiveGhostCamera = function (siteId, optionNum, refImageSrc) {
     // Remove camera screen
     cameraScreen.remove();
 
-    window.showMatchConfidenceModal(site);
+    legacyShowMatchConfidenceModal(site);
   };
 };
 
 // Match Confidence Verified Success Modal
-window.showMatchConfidenceModal = function (site) {
+const legacyShowMatchConfidenceModal = function (site) {
   const oldModal = document.getElementById('match-confidence-modal');
   if (oldModal) oldModal.remove();
 
@@ -8849,7 +8739,7 @@ window.requireFreshVerificationAccess = async function (siteId) {
   return true;
 };
 
-window.initBackgroundImmersionTimer = function (siteId) {
+const legacyInitBackgroundImmersionTimer = function (siteId) {
   if (!siteId) return;
   const cleanId = String(siteId).toLowerCase().trim();
   const lockKey = 'yathra_immersion_timer_' + cleanId;
@@ -9584,7 +9474,7 @@ window.initSiteQuizSession = function (siteId) {
     seen.add(key);
     return true;
   });
-  if (!site || siteBank.length < 5) {
+  if (!site || siteBank.length < APP_RULES.quiz.questionsPerSession) {
     if (typeof window.showNotification === 'function') {
       window.showNotification("Knowledge Quiz for this location will be available soon.", "info");
     } else {
@@ -9606,7 +9496,7 @@ window.initSiteQuizSession = function (siteId) {
 
   // Sample five questions only from the selected landmark.
   const shuffledBank = [...siteBank].sort(() => 0.5 - Math.random());
-  const selectedFive = shuffledBank.slice(0, 5).map(q => {
+  const selectedFive = shuffledBank.slice(0, APP_RULES.quiz.questionsPerSession).map(q => {
     const indexedOptions = q.options.map((opt, i) => ({ text: opt, isCorrect: i === q.correctIndex }));
     const shuffledOptions = indexedOptions.sort(() => 0.5 - Math.random());
     return {
@@ -9624,7 +9514,7 @@ window.initSiteQuizSession = function (siteId) {
     questions: selectedFive,
     currentIndex: 0,
     score: 0,
-    timeLeft: 30, // 30 seconds per question
+    timeLeft: APP_RULES.quiz.secondsPerQuestion,
     timerId: null,
     selectedOptionIndex: null // tracks answer selection allowing changes before confirming
   };
@@ -9650,14 +9540,13 @@ function renderQuiz() {
 
   if (session.timerId) clearInterval(session.timerId);
 
-  // 30-Second Countdown Timer
-  session.timeLeft = 30;
+  session.timeLeft = APP_RULES.quiz.secondsPerQuestion;
   session.timerId = setInterval(() => {
     session.timeLeft--;
     const timerEl = document.getElementById('quiz-countdown-display');
     if (timerEl) {
       timerEl.textContent = `${session.timeLeft}s`;
-      timerEl.style.setProperty('--quiz-progress', `${Math.max(0, session.timeLeft / 30) * 360}deg`);
+      timerEl.style.setProperty('--quiz-progress', `${Math.max(0, session.timeLeft / APP_RULES.quiz.secondsPerQuestion) * 360}deg`);
       if (session.timeLeft <= 5) {
         timerEl.style.borderColor = '#DC2626';
         timerEl.style.color = '#991B1B';
@@ -9682,7 +9571,7 @@ function renderQuiz() {
           <small>Question ${qNum} of ${session.questions.length}</small>
         </span>
         <span id="quiz-countdown-display" class="yl-quiz-timer" style="--quiz-progress: 360deg;">
-          30s
+          ${APP_RULES.quiz.secondsPerQuestion}s
         </span>
       </div>
 
@@ -9857,8 +9746,8 @@ window.finalizeQuizSession = function () {
           
           <p style="margin: 0 0 20px 0; font-size: 12.5px; color: #4A3E2C; text-align: center; line-height: 1.5; max-width: 300px;">
             ${passed
-        ? `You achieved 100% accuracy. +50 XP has been credited to your explorer passport for ${siteName}.`
-        : `A score of ${questionCount} out of ${questionCount} is required to earn the Landmark Mastery Badge. ${attemptResult.attemptsRemaining} of 3 attempts remain before the 30-minute global quiz cooldown.`
+        ? `You achieved ${APP_RULES.quiz.masteryPercent}% accuracy. +${APP_RULES.xp.quiz} XP has been credited to your explorer passport for ${siteName}.`
+        : `A score of ${questionCount} out of ${questionCount} is required to earn the Landmark Mastery Badge. ${attemptResult.attemptsRemaining} of ${APP_RULES.quiz.maxAttempts} attempts remain before this landmark's ${Math.round(APP_RULES.quiz.cooldownMs / 60000)}-minute quiz cooldown.`
       }
           </p>
 
@@ -10976,28 +10865,13 @@ window.updateGlobalFooterVisibility = function () {
 };
 
 function renderGlobalFooter(activeTab = 'home') {
-  const tabs = [
-    {
-      id: 'home',
-      label: 'Home',
-      icon: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>`
-    },
-    {
-      id: 'activism',
-      label: 'Activism',
-      icon: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path></svg>`
-    },
-    {
-      id: 'rewards',
-      label: 'Achievements',
-      icon: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="7"></circle><polyline points="8.21 13.89 7 23 12 20 17 23 15.79 13.88"></polyline></svg>`
-    },
-    {
-      id: 'profile',
-      label: 'Profile',
-      icon: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>`
-    }
-  ];
+  const icons = {
+    home: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>`,
+    activism: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path></svg>`,
+    rewards: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="7"></circle><polyline points="8.21 13.89 7 23 12 20 17 23 15.79 13.88"></polyline></svg>`,
+    profile: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>`
+  };
+  const tabs = APP_RULES.navigation.map(tab => ({ ...tab, icon: icons[tab.id] }));
 
   return `
     <div class="global-bottom-nav" style="position: fixed !important; bottom: 0 !important; left: 0 !important; width: 100% !important; height: 64px !important; background: #FFFFFF !important; border-top: 1px solid #E2E8F0 !important; display: flex !important; align-items: center !important; justify-content: space-around !important; z-index: 1000 !important; transform: translateZ(0) !important; box-shadow: 0 -4px 20px rgba(0,0,0,0.08) !important; box-sizing: border-box; padding-bottom: max(env(safe-area-inset-bottom), 0px);">
@@ -12460,11 +12334,11 @@ function handleEmailAuthBoot() {
 // ============================================================================
 
 window.ACTIVE_LANDMARK_SESSION_KEY = 'yathralanka_active_landmark_session_v2';
-window.ACTIVE_LANDMARK_DEFAULT_DURATION_MS = 15 * 60 * 1000;
-window.ACTIVE_LANDMARK_OUTSIDE_GRACE_MS = 60 * 60 * 1000;
+window.ACTIVE_LANDMARK_DEFAULT_DURATION_MS = APP_RULES.verification.defaultVisitMs;
+window.ACTIVE_LANDMARK_OUTSIDE_GRACE_MS = APP_RULES.verification.outsideResumeWindowMs;
 window.getLandmarkSessionDurationMs = function (siteId) {
   return String(siteId || '').toLowerCase().trim() === 'bmich'
-    ? 3 * 60 * 1000
+    ? APP_RULES.verification.bmichVisitMs
     : window.ACTIVE_LANDMARK_DEFAULT_DURATION_MS;
 };
 
@@ -13142,7 +13016,7 @@ window.analyzeLandmarkPhoto = async function (video, referenceImageSrc, overlayI
 
   return {
     score,
-    passed: score >= 75,
+    passed: score >= APP_RULES.verification.photoMatchPercent,
     capturedDataUrl,
     comparisonDataUrl,
     referenceComparisonDataUrl,
@@ -13479,7 +13353,7 @@ window.snapShutterAndVerify = async function (siteId = 'independence_memorial_ha
   if (result.passed) {
     if (!alreadyPhotoVerified && typeof window.awardLandmarkXP === 'function') {
       window.awardLandmarkXP(cleanId, 'PHOTO');
-      xpAwarded = 70;
+      xpAwarded = APP_RULES.xp.photo;
     }
     progress.photoVerified = true;
     localStorage.setItem('site_photo_verified_' + cleanId, 'true');
@@ -13508,13 +13382,13 @@ window.showPhotoComparisonResult = function (site, option, result, xpAwarded = 0
   const overlay = document.createElement('div');
   overlay.id = 'photo-comparison-result';
   overlay.className = `photo-comparison-result ${result.passed ? 'is-passed' : 'is-rejected'}`;
-  const thresholdDifference = Math.abs(result.score - 75);
+  const thresholdDifference = Math.abs(result.score - APP_RULES.verification.photoMatchPercent);
   const currentXP = Number(window.state?.user?.xp || window.state?.xp || 0);
   overlay.innerHTML = `
     <div class="photo-comparison-result-card" role="dialog" aria-modal="true" aria-labelledby="photo-result-title">
       <div class="photo-result-status">${result.passed ? 'IMAGE VERIFICATION COMPLETE' : 'IMAGE VERIFICATION NOT COMPLETED'}</div>
       <div class="photo-result-score-ring"><strong>${result.score}%</strong><span>match</span></div>
-      <h2 id="photo-result-title">${result.passed ? 'Reference match accepted' : 'Reference match below 75%'}</h2>
+      <h2 id="photo-result-title">${result.passed ? 'Reference match accepted' : `Reference match below ${APP_RULES.verification.photoMatchPercent}%`}</h2>
       <p class="photo-result-summary">
         ${result.passed
           ? `The captured image matched ${option.title} by ${result.score}%, which is ${thresholdDifference}% above the required score.`

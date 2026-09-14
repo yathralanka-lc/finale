@@ -7,6 +7,7 @@
     "postinstall": "node scripts/fix-proguard.js",
     "dev": "vite",
     "build": "vite build",
+    "audit:phase2": "node scripts/audit-phase2-baseline.mjs",
     "build:phone-test": "vite build --mode phone-test",
     "cap:sync": "node scripts/fix-proguard.js && npm run build && cap sync",
     "cap:sync:phone-test": "node scripts/fix-proguard.js && npm run build:phone-test && cap sync android",
