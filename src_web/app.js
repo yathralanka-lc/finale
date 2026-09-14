@@ -4498,7 +4498,7 @@ window.initLeafletMapInstance = function (containerEl = null, params = {}) {
       const allSites = (window.sitesData || sitesData || []).filter(site => site && site.latitude && site.longitude);
       const priorityLabels = new Set([
         'colombo_museum', 'independence_memorial_hall', 'sigiriya',
-        'temple_of_the_tooth', 'ruwanweliseya', 'galle_fort', 'dowa_temple'
+        'ladies_college_colombo', 'temple_of_the_tooth', 'ruwanweliseya', 'galle_fort', 'dowa_temple'
       ]);
 
       allSites.forEach((site) => {
@@ -4523,7 +4523,10 @@ window.initLeafletMapInstance = function (containerEl = null, params = {}) {
           iconAnchor: [markerSize / 2, markerSize / 2]
         });
 
-        const marker = L.marker([coords.lat, coords.lng], { icon, zIndexOffset: 2000 }).addTo(map);
+        const marker = L.marker([coords.lat, coords.lng], {
+          icon,
+          zIndexOffset: site.id === 'ladies_college_colombo' ? 2600 : 2000
+        }).addTo(map);
         markerCount++;
 
         if (typeof window.getShortSiteName === 'function') {
