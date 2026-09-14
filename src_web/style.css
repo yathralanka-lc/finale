@@ -6037,6 +6037,24 @@ body.modal-active .global-bottom-nav,
   overflow: hidden !important;
 }
 
+/* iPhone Safari changes its visible viewport when its browser controls are shown.
+   Use the dynamic viewport so the capture controls remain above those controls. */
+@supports (height: 100dvh) {
+  #camera-viewfinder-root,
+  #photo-match-camera-screen,
+  #target-framing-screen,
+  #live-ghost-camera-screen,
+  .presence-camera-container {
+    height: 100dvh !important;
+  }
+}
+
+#photo-match-camera-screen .photo-match-capture-actions {
+  bottom: 0 !important;
+  min-height: 116px;
+  box-sizing: border-box;
+}
+
 /* Persistent single-site visit clock */
 .active-landmark-session-clock {
   position: fixed;

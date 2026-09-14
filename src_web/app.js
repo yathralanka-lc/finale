@@ -12868,20 +12868,21 @@ window.openPhotoMatchCamera = async function (siteId = 'independence_memorial_ha
       </span>
     </div>
 
-    <!-- Camera Bottom Action Area: Single Physical Circular Shutter Button ONLY -->
-    <div style="position: absolute; bottom: 0; left: 0; right: 0; z-index: 10; padding: 20px 16px max(env(safe-area-inset-bottom), 30px) 16px; background: linear-gradient(0deg, rgba(0,0,0,0.85) 0%, transparent 100%); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;">
+    <!-- Camera Bottom Action Area: kept inside the visible mobile viewport -->
+    <div class="photo-match-capture-actions" style="position: absolute; bottom: 0; left: 0; right: 0; z-index: 30; padding: 10px 16px max(env(safe-area-inset-bottom), 14px) 16px; background: linear-gradient(0deg, rgba(0,0,0,0.9) 0%, transparent 100%); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px;">
       <p style="color: #FFFFFF; font-size: 12px; margin: 0; text-shadow: 0 2px 4px rgba(0,0,0,0.8); font-weight: 600;">
-        Resize and align the guide, then take a verification photo.
+        Resize and align the guide, then tap the shutter below.
       </p>
 
       <!-- Physical Circular Shutter Button -->
       <button 
-        id="btn-shutter-snap" 
+        id="btn-shutter-snap" aria-label="Take verification photo" 
         onclick="window.snapShutterAndVerify('${site.id}', ${optionNum})" 
         style="width: 72px; height: 72px; border-radius: 50%; background: #FFFFFF; border: 5px solid #0B5A68; box-shadow: 0 4px 20px rgba(0,0,0,0.5), inset 0 0 0 3px #FFFFFF; cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0; transition: transform 0.1s ease;"
       >
         <div style="width: 52px; height: 52px; border-radius: 50%; background: #0B5A68;"></div>
       </button>
+      <span style="color:#FFFFFF;font-size:12px;font-weight:800;letter-spacing:.2px;">Tap to take photo</span>
     </div>
   `;
 
