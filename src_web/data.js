@@ -95,6 +95,63 @@ export const SMART_MEDALS_CONFIG = [
   }
 ];
 
+const ladiesCollegeQuizQuestions = [
+  ['In which year was Ladies’ College founded?', '1900', '1910', '1925', '1948'],
+  ['Which organisation founded Ladies’ College?', 'Church Missionary Society (CMS)', 'Salvation Army', 'British Council', 'University of Colombo'],
+  ['Who was the principal founder of Ladies’ College?', 'Lilian Nixon', 'Gwen Opie', 'Mable Simon', 'Olive Hitchcock'],
+  ['Who was Lilian Nixon’s founding companion?', 'Elizabeth Whitney', 'Sirancee Gunawardana', 'Nirmali Wickremesinghe', 'Eesha Speldewinde'],
+  ['Where was the College first established?', 'A rented bungalow in Slave Island', 'The present Flower Road site', 'Kandy', 'Galle Fort'],
+  ['How many students did Ladies’ College begin with?', 'Two', 'Twenty', 'Fifty', 'One hundred'],
+  ['Which city is Ladies’ College located in?', 'Colombo', 'Kandy', 'Galle', 'Jaffna'],
+  ['Which postal area is given in the College address?', 'Colombo 07', 'Colombo 01', 'Colombo 03', 'Colombo 10'],
+  ['What is the official street address of Ladies’ College?', '66, Sir Ernest De Silva Mawatha', '10 Flower Road', '66 Galle Road', '1 Union Place'],
+  ['What kind of school is Ladies’ College?', 'A private Anglican Christian girls’ school', 'A state boys’ school', 'A public university', 'A technical college'],
+  ['What does the College seek to provide according to its official profile?', 'Holistic education rooted in Christian principles', 'Only sports training', 'Only university preparation', 'Only distance learning'],
+  ['Ladies’ College welcomes students of which communities?', 'All religions and ethnicities', 'One religion only', 'One ethnicity only', 'International students only'],
+  ['What is the College motto?', 'Haec Victoria Nostra Fides', 'Unity, Freedom, Discipline', 'Learning Through Service', 'Truth and Courage'],
+  ['Which principal’s tenure began in 1900?', 'Lilian Nixon', 'Gwen Opie', 'Mable Simon', 'Olive Hitchcock'],
+  ['In which year did Lilian Nixon’s principalship end?', '1914', '1910', '1917', '1924'],
+  ['What was Lilian Nixon’s nationality?', 'Irish', 'Canadian', 'Sri Lankan', 'Indian'],
+  ['What did Lilian Nixon believe the College should be first?', 'A place of sound learning', 'A military academy', 'A boarding hotel', 'A sports club'],
+  ['Which phrase was part of Lilian Nixon’s vision for the College?', 'A full, varied and natural life', 'A life without co-curricular activities', 'A school without community', 'A campus without nature'],
+  ['What spiritual setting did Nixon include in her vision?', 'Growth within the life of the Church', 'A secular examination hall', 'A political society', 'A commercial training centre'],
+  ['What was the name of the Flower Road property associated with the College’s growth?', 'The Fernery', 'The Citadel', 'The Pavilion', 'The Foundry'],
+  ['In which year was the Fernery purchased on Flower Road?', '1910', '1900', '1925', '1948'],
+  ['How large does the College’s 125-year page describe the present grounds?', '10 acres', '2 acres', '25 acres', '50 acres'],
+  ['Which feature is especially associated with entering the College?', 'The red gates', 'A lighthouse', 'A clock tower', 'A drawbridge'],
+  ['Which architectural combination is described for the school chapel?', 'Moorish facade and Kandyan roof', 'Gothic facade and glass dome', 'Dutch gable and flat roof', 'Art Deco facade and steel roof'],
+  ['Which corridor is described as pillared and colonial?', 'Copelston corridor', 'Nixon corridor', 'Whitney corridor', 'Fernery corridor'],
+  ['What does the official introduction call the design of the school Hall?', 'Sleek', 'Medieval', 'Underground', 'Temporary'],
+  ['What was created to preserve College records of the past?', 'The Archives', 'A sports pavilion', 'A railway station', 'A science laboratory'],
+  ['In which month and year was the Archives foundation stone laid?', 'October 2009', 'January 1900', 'October 2010', 'February 2025'],
+  ['On what date was the Archives building opened?', '29 October 2010', '1 January 1900', '4 February 1948', '29 October 2009'],
+  ['Who opened the Archives building?', 'Deshamanaya Siva Obeyesekere', 'Lilian Nixon', 'Elizabeth Whitney', 'Gwen Opie'],
+  ['The Archives history is presented through material associated with how many principals?', 'Seven', 'Three', 'Ten', 'One'],
+  ['Which items does the Archives invite the community to preserve?', 'Pictures, articles, clippings, badges and trophies', 'Only modern textbooks', 'Only uniforms', 'Only sports equipment'],
+  ['Which organisation’s centenary was commemorated in creating the Archives?', 'The Old Girls’ Association', 'The Parents’ Association', 'The Science Society', 'The Sports Club'],
+  ['Which year marked the College’s 125th anniversary?', '2025', '2000', '2010', '2026'],
+  ['How many students did the College’s 125-year page say it had in 2025?', 'About 1,800', 'About 200', 'About 500', 'About 10,000'],
+  ['What was the title of the 125-year anthem?', 'One Heart, One Voice', 'Through the Red Gates', 'One Family Unbroken', 'The Fernery Song'],
+  ['How many voices performed the 125-year anthem?', '125', '25', '50', '1,000'],
+  ['Who wrote the words of the 125-year anthem?', 'Anushka Abhayaratne', 'Divya Mohanraj', 'Lara Gunawardana', 'Harseni Hewavitarne'],
+  ['Who composed the music for the 125-year anthem?', 'Divya Mohanraj', 'Anushka Abhayaratne', 'Netra Bulankulame', 'Siva Obeyesekere'],
+  ['Who designed the 125-year logo?', 'Lara Gunawardana', 'Harseni Hewavitarne', 'Anushka Abhayaratne', 'Mable Simon'],
+  ['Who created the watercolour painting of the beloved red gates for the school?', 'Harseni Hewavitarne', 'Lara Gunawardana', 'Netra Bulankulame', 'Elizabeth Whitney'],
+  ['Who created the school-layout drawing used in the First Day Cover?', 'Netra Bulankulame', 'Lara Gunawardana', 'Harseni Hewavitarne', 'Gwen Opie'],
+  ['What was the title of the 125-year coffee-table book?', 'Through the Red Gates 100+25', 'The Fernery 125', 'One Heart, One Voice', 'The College Hall'],
+  ['Who worked on the book Through the Red Gates 100+25?', 'Sulakshana de Mel', 'Siva Obeyesekere', 'Mable Simon', 'Olive Hitchcock'],
+  ['Which four houses were celebrated for 100 years in 2025?', 'Loos, Dale, Whitney and Nixon', 'Blue, Green, Red and Gold', 'Nixon, Opie, Simon and Hitchcock', 'North, South, East and West'],
+  ['What practice turned old chairs and desks into 125-year merchandise?', 'Recycling', 'Importing', 'Demolition', 'Digitising'],
+  ['What phrase describes the College community’s unity in diversity?', 'One family unbroken', 'One campus only', 'One subject only', 'One year only'],
+  ['What type of opportunities does the College say support students beyond academics?', 'Co-curricular and extra-curricular activities', 'Only tuition classes', 'Only examinations', 'Only online lectures'],
+  ['Which value does the College say its education supports alongside achievement?', 'Strength of character', 'Celebrity status', 'Commercial competition', 'Political influence'],
+  ['What does the College describe its tree-filled campus as in the 125-year account?', 'An oasis of natural beauty', 'An industrial zone', 'A shopping district', 'A sports stadium']
+].map(([question, correct, wrongOne, wrongTwo, wrongThree]) => ({
+  question,
+  options: [correct, wrongOne, wrongTwo, wrongThree],
+  correctIndex: 0
+}));
+
 export const sitesData = [
   // --- HERITAGE TRAIL ---
   {
@@ -588,6 +645,55 @@ export const sitesData = [
         correctIndex: 0
       }
     ]
+  },
+  {
+    id: "ladies_college_colombo",
+    name: "Ladies’ College, Colombo",
+    district: "Colombo District",
+    category: "Heritage Trail",
+    xp: 220,
+    xpRange: "25 - 80 XP",
+    distance: "3km",
+    openStatus: "Open now",
+    description: "Founded in 1900 by Lilian Nixon and Elizabeth Whitney, Ladies’ College is a historic Christian girls’ school in Colombo 07. Its tree-filled campus brings together the chapel, colonial corridors, the College Hall and the much-loved red gates.",
+    image: "/assets/images/ladies_college_option_1.jpg",
+    latitude: 6.9072,
+    longitude: 79.8575,
+    referenceImage: "/assets/images/ladies_college_option_1.jpg",
+    verificationOptions: [
+      {
+        number: 1,
+        title: "Ladies’ College Main Building",
+        description: "Match the main College building, its lettering and red-tiled entrance roof. Keep the original landscape reference aligned to the building edges.",
+        image: "/assets/images/ladies_college_option_1.jpg",
+        fitAxis: "horizontal"
+      },
+      {
+        number: 2,
+        title: "Ladies’ College Chapel",
+        description: "Match the chapel entrance, arched stonework and surrounding trees. Keep the original portrait reference aligned vertically.",
+        image: "/assets/images/ladies_college_option_2.jpg",
+        fitAxis: "vertical"
+      },
+      {
+        number: 3,
+        title: "Ladies’ College Red Gates",
+        description: "Match the red gates and the College crest at the centre of the gate. Keep the original landscape reference aligned to the gate details.",
+        image: "/assets/images/ladies_college_option_3.jpg",
+        fitAxis: "horizontal"
+      }
+    ],
+    checkpoints: [
+      {
+        id: "ladies_college_main_building",
+        name: "Ladies’ College Main Building",
+        description: "A historic College building within the tree-filled Colombo 07 campus.",
+        referenceImage: "/assets/images/ladies_college_option_1.jpg",
+        hint: "Frame the College lettering and red-tiled entrance roof in your camera viewfinder.",
+        xpReward: 50
+      }
+    ],
+    quizzes: ladiesCollegeQuizQuestions
   },
   {
     id: "sigiriya",

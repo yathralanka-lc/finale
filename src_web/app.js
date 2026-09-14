@@ -7408,7 +7408,7 @@ function resolveSiteImage(keywords = []) {
 // DIRECTORY DATASET (STRICT DUAL-TAB SEGREGATION)
 // ============================================================================
 const PRODUCTION_SITE_IDS = new Set([
-  'bmich', 'independence_memorial_hall', 'colombo_museum', 'galle_fort',
+  'bmich', 'independence_memorial_hall', 'colombo_museum', 'ladies_college_colombo', 'galle_fort',
   'sigiriya', 'temple_of_the_tooth', 'ruwanweliseya', 'mihintale',
   'dambulla_cave', 'ritigala', 'dowa_temple', 'yudaganawa',
   'pilikuttuwa', 'maligawila', 'buduruwagala'
@@ -7446,6 +7446,17 @@ function getDirectoryDataset() {
       description: 'A landmark convention centre in Colombo known for its national, civic, and cultural importance.',
       latitude: 6.9016667,
       longitude: 79.8727778
+    },
+    {
+      id: 'ladies_college_colombo',
+      name: 'Ladies’ College, Colombo',
+      category: 'Heritage Trail',
+      district: 'Colombo',
+      xp: 50,
+      image: '/assets/images/ladies_college_option_1.jpg',
+      description: 'A historic girls’ school campus in Colombo 07, founded in 1900 and recognised for its chapel, red gates and tree-filled grounds.',
+      latitude: 6.9072,
+      longitude: 79.8575
     },
     {
       id: 'sigiriya',
@@ -8573,7 +8584,7 @@ function renderSiteDetail(site = window.state?.activeSite) {
     const quizLock = (typeof window.getQuizLockStatus === 'function') ? window.getQuizLockStatus(site.id) : { isLocked: false, remainingMinutes: 0 };
     console.log('[SITE-RUNTIME 07] quiz-lock-check-complete locked=', quizLock.isLocked);
 
-    const multiOptionSites = new Set(['independence_memorial_hall', 'colombo_museum', 'bmich', 'galle_fort']);
+    const multiOptionSites = new Set(['independence_memorial_hall', 'colombo_museum', 'bmich', 'ladies_college_colombo', 'galle_fort']);
     const verificationOptions = Array.isArray(site.verificationOptions) && site.verificationOptions.length
       ? site.verificationOptions.slice(0, multiOptionSites.has(site.id) ? site.verificationOptions.length : 1)
       : [{ number: 1 }];
