@@ -531,6 +531,20 @@ export const sitesData = [
         description: "Match the angled side frontage, roofline, pillars and entrance canopy. The reference stays in its original orientation and spans the left and right edges.",
         image: "/assets/images/bmich_option_3.jpg",
         fitAxis: "horizontal"
+      },
+      {
+        number: 4,
+        title: "VisionEX Mascot Display",
+        description: "Frame the VisionEX mascot display from its top edge to its base. This portrait reference is aligned to the upper and lower guide boundaries; use the smooth zoom controls to match its scale.",
+        image: "/assets/images/bmich_option_4_visionex_mascot.jpeg",
+        fitAxis: "vertical"
+      },
+      {
+        number: 5,
+        title: "Ceremonial Lamp",
+        description: "Frame the ceremonial lamp from the top ornament down to its base. This portrait reference is aligned to the upper and lower guide boundaries; use the smooth zoom controls to match its scale.",
+        image: "/assets/images/bmich_option_5_ceremonial_lamp.jpeg",
+        fitAxis: "vertical"
       }
     ],
     checkpoints: [

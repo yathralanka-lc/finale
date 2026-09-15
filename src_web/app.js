@@ -213,7 +213,7 @@ window.getSiteProgressKey = function (uid) {
 
 const MUSEUM_PRODUCTION_RESET_VERSION = 'museum-production-reset-2026-09-12-v1';
 const INDEPENDENCE_PRODUCTION_RESET_VERSION = 'independence-production-reset-2026-09-12-v1';
-const BMICH_PRODUCTION_RESET_VERSION = 'bmich-production-reset-2026-09-12-v1';
+const BMICH_PRODUCTION_RESET_VERSION = 'bmich-production-reset-2026-09-15-v2';
 
 window.resetMuseumProductionProgress = function (uid, storedProgress = {}) {
   const markerKey = `yathralanka_${MUSEUM_PRODUCTION_RESET_VERSION}_${uid || 'guest'}`;
@@ -4042,6 +4042,40 @@ window.executeAppNavigation = function (targetScreen, params = {}) {
             console.warn("Immersion timer post-mount warning:", timerErr);
           }
         }
+      }
+      // BMICH is the live VisionEX finale checkpoint. As soon as its detail page
+      // opens, obtain a fresh location and automatically begin its three-minute
+      // on-site verification clock when the visitor is inside the 500 m radius.
+      // Other landmarks keep their existing user-triggered timing behaviour.
+      if (String(window.state?.activeSite?.id || '').toLowerCase() === 'bmich') {
+        setTimeout(async () => {
+          try {
+            const site = window.state?.activeSite;
+            if (!site || window.getLandmarkAchievementStatus?.(site.id)?.locationVerified) return;
+            const existingSession = window.getActiveLandmarkSession?.();
+            if (String(existingSession?.siteId || '').toLowerCase() === 'bmich') return;
+            const position = await window.refreshCurrentLocationForVerification?.(site.id, false);
+            const coords = window.resolveSiteCoordinates?.(site) || { lat: site.latitude, lng: site.longitude };
+            const distance = calculateHaversineDistanceMeters(
+              Number(position?.latitude),
+              Number(position?.longitude),
+              Number(coords?.lat),
+              Number(coords?.lng)
+            );
+            if (!Number.isFinite(distance) || distance > window.VERIFICATION_RADIUS_METERS) return;
+
+            window.state.siteLocationVerified = site.id;
+            const session = window.startActiveLandmarkSession?.(site);
+            window.ensureActiveLandmarkSessionTimer?.();
+            if (String(session?.siteId || '').toLowerCase() === 'bmich') {
+              window.executeAppNavigation?.('site-detail', { id: site.id, preserveOrigin: true });
+            }
+          } catch (error) {
+            // The normal location-required view remains available if a device
+            // cannot supply a fresh location at this moment.
+            console.warn('BMICH automatic visit timer could not start:', error);
+          }
+        }, 0);
       }
       if (window.state?.siteDetailTab === 'verification' && !isValidLocationCoordinatePair(window.userCoordinates || window.state?.userCoordinates)) {
         setTimeout(() => {
