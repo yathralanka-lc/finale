@@ -22,7 +22,7 @@ export const SITE_COORDINATES_MAP = Object.freeze({
   dowa_rock_temple: { lat: 6.8202, lng: 81.0255 },
   yudaganawa: { lat: 6.7292, lng: 81.2831 },
   pilikuttuwa: { lat: 6.8465, lng: 79.9933 },
-  maligawila: { lat: 6.7352, lng: 81.3392 },
+  maligawila: { lat: 6.846537, lng: 79.993280 },
   buduruwagala: { lat: 6.6908, lng: 81.0772 }
 });
 

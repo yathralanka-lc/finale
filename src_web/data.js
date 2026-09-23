@@ -1,8 +1,8 @@
 // YathraLanka App Data Configuration
 
-// The public build always uses the real landmark coordinates. The separately
-// labelled phone-test build keeps the temporary Flower Road coordinate so the
-// school team can test Independence Memorial Hall without changing live data.
+// The public build always uses real landmark coordinates and references. The
+// separately labelled phone-test build can use temporary field-test targets
+// without changing the production experience.
 const IS_PHONE_TEST_BUILD = import.meta.env.MODE === 'phone-test';
 
 export const initialUserState = {
@@ -3022,9 +3022,20 @@ export const sitesData = [
     openStatus: "Open now",
     description: "A free-standing 7th-century Buddha statue measuring over 37 feet tall, sculpted from a single crystalline limestone boulder deep in the southeastern forest.",
     image: "/Element%20Pictures/maligawila%20buddha%20statue.jpg",
-    latitude: 6.7352,
-    longitude: 81.3392,
-    referenceImage: "/Element%20Pictures/maligawila%20buddha%20statue.jpg",
+    latitude: 6.846537,
+    longitude: 79.993280,
+    productionLatitude: 6.7352,
+    productionLongitude: 81.3392,
+    referenceImage: "/assets/images/maligawila_phone_test_statue.svg",
+    verificationOptions: [
+      {
+        number: 1,
+        title: "Maligawila Remote Test Statue",
+        description: "For remote testing, align the uploaded standing statue within the camera guide.",
+        image: "/assets/images/maligawila_phone_test_statue.svg",
+        fitAxis: "vertical"
+      }
+    ],
     checkpoints: [
       {
         id: "maligawila_limestone_statue",
