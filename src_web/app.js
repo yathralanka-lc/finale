@@ -4487,27 +4487,27 @@ window.initLeafletMapInstance = function (containerEl = null, params = {}) {
       document.head.appendChild(style);
     }
 
-    const sriLankaBounds = [[5.85, 79.50], [9.85, 81.90]];
+    const indiaSriLankaBounds = [[5.5, 68.0], [36.0, 98.5]];
 
     stage = 'constructor';
     console.log('[MAP-RUNTIME 04] constructor-start');
     const map = L.map(mapElement, {
       zoomControl: false,
       attributionControl: false,
-      maxBounds: [[5.0, 78.5], [10.5, 83.0]],
-      minZoom: 6.5,
+      maxBounds: [[4.0, 65.0], [38.0, 101.0]],
+      minZoom: 3.5,
       zoomSnap: 0.25,
       zoomDelta: 0.5
     });
 
-    map.fitBounds(sriLankaBounds, { padding: [8, 8] });
+    map.fitBounds(indiaSriLankaBounds, { padding: [8, 8] });
     map.panBy([0, 28], { animate: false });
     window.activeLeafletMap = map;
     console.log('[MAP-RUNTIME 05] constructor-success');
 
     window.resetMapToFrame = function () {
       if (window.activeLeafletMap) {
-        window.activeLeafletMap.fitBounds(sriLankaBounds, { padding: [8, 8] });
+        window.activeLeafletMap.fitBounds(indiaSriLankaBounds, { padding: [8, 8] });
         window.activeLeafletMap.panBy([0, 28], { animate: false });
       }
     };
@@ -6646,7 +6646,8 @@ function renderFallbackLeafletMap(containerId = 'map-container', coords = [7.873
     if (mapContainer._leaflet_id) {
       mapContainer._leaflet_id = null;
     }
-    const map = L.map(targetId, { attributionControl: false, zoomControl: true, dragging: true, tap: true, touchZoom: true, scrollWheelZoom: true }).setView(coords, 8);
+    const map = L.map(targetId, { attributionControl: false, zoomControl: true, dragging: true, tap: true, touchZoom: true, scrollWheelZoom: true, minZoom: 3.5 });
+    map.fitBounds([[5.5, 68.0], [36.0, 98.5]], { padding: [8, 8] });
 
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '&copy; OpenStreetMap contributors'
@@ -6686,8 +6687,8 @@ function initMap(containerId = 'map-container', defaultCoords = [7.8731, 80.7718
 
   try {
     const map = new google.maps.Map(mapElement, {
-      center: { lat: defaultCoords[0], lng: defaultCoords[1] },
-      zoom: 8,
+      center: { lat: 20.75, lng: 83.25 },
+      zoom: 4,
       disableDefaultUI: false,
       zoomControl: true,
       zoomControlOptions: {
@@ -6742,12 +6743,12 @@ window.initLeafletMap = function () {
     container._leaflet_id = null;
   }
 
-  // Initialize map centered over Sri Lanka
+  // Initialize the map with India and Sri Lanka visible.
   const map = L.map(container, {
     zoomControl: false,
     attributionControl: false
   });
-  map.fitBounds([[5.85, 79.50], [9.85, 81.90]], { padding: [10, 10] });
+  map.fitBounds([[5.5, 68.0], [36.0, 98.5]], { padding: [10, 10] });
   map.panBy([0, 28], { animate: false });
 
   window.leafletMapInstance = map;
@@ -13341,4 +13342,3 @@ window.triggerNativeCapacitorCamera = async function (siteId, optionNum) {
     console.warn("Capacitor camera fallback skipped:", e);
   }
 };
-
